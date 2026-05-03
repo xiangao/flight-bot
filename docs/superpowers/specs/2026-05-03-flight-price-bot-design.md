@@ -15,18 +15,19 @@ A Python script that runs once at machine startup, searches Amadeus for the chea
 ### Route 1 — Asia Grand Tour (Multi-city)
 | Leg | Origin | Destination | Stay |
 |-----|--------|-------------|------|
-| 1 | BOS | TYO (NRT or HND) | 7 days |
-| 2 | OSA (KIX) | HKG | 14 days |
+| 1 | BOS | TYO (NRT or HND) | 7–10 days |
+| 2 | OSA (KIX) | HKG | 14–18 days |
 | 3 | HKG | BOS | — |
 
 - Type: Multi-city (3 segments)
 - Max stops per segment: 1
-- Note: Tokyo (TYO) → Osaka (OSA) travel is by shinkansen — not tracked by this bot. The bot prices the 3 flights only.
+- Tokyo → Osaka internal travel is out of scope (shinkansen, not a flight)
+- Stay flexibility: searcher samples all combinations of stay durations within each range and keeps the cheapest overall itinerary
 
 ### Route 2 — Boston–Hong Kong Round Trip
 - Origin: BOS
 - Destination: HKG
-- Stay: 21 days
+- Stay: 18–25 days
 - Type: Round trip
 - Max stops: 1
 
@@ -72,10 +73,12 @@ routes:
     segments:
       - origin: BOS
         destination: TYO
-        stay_days: 7
+        stay_min: 7
+        stay_max: 10
       - origin: OSA
         destination: HKG
-        stay_days: 14
+        stay_min: 14
+        stay_max: 18
       - origin: HKG
         destination: BOS
     max_stops: 1
@@ -84,7 +87,8 @@ routes:
     type: round_trip
     origin: BOS
     destination: HKG
-    stay_days: 21
+    stay_min: 18
+    stay_max: 25
     max_stops: 1
 
 search:
@@ -97,8 +101,8 @@ search:
 ### `code/searcher.py`
 - Authenticates with Amadeus using OAuth2 client credentials (token expires in 30 min — fresh token per run)
 - For round-trip routes: calls `GET /v2/shopping/flight-offers` with `originLocationCode`, `destinationLocationCode`, `departureDate`, `returnDate`, `max=1`, `nonStop=false`, `maxNumberOfConnections=1`
-- For multi-city routes: calls `POST /v2/shopping/flight-offers` with `originDestinations` array (3 legs), computing intermediate dates from `stay_days`
-- Returns cheapest offer per sampled date, then returns the global minimum across all sampled dates
+- For multi-city routes: calls `POST /v2/shopping/flight-offers` with `originDestinations` array (3 legs), iterating over combinations of departure date × stay durations within `stay_min`/`stay_max` ranges
+- Returns the single cheapest itinerary across all sampled departure dates and stay-length combinations
 
 ### `code/analyzer.py`
 - Reads `data/prices.csv`
