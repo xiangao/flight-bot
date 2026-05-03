@@ -12,14 +12,19 @@ OUTPUT_PATH = BASE_DIR / "output" / "latest.txt"
 
 
 def main() -> None:
-    with open(CONFIG_PATH) as f:
-        cfg = yaml.safe_load(f)
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = yaml.safe_load(f)
+        search_cfg = cfg["search"]
+        routes = cfg["routes"]
+    except (FileNotFoundError, KeyError, TypeError) as e:
+        print(f"ERROR: Could not load config from {CONFIG_PATH}: {e}")
+        return
 
-    search_cfg = cfg["search"]
     results: list[FlightResult] = []
-    alerts = []
+    alerts: list = []
 
-    for route in cfg["routes"]:
+    for route in routes:
         print(f"Searching {route['name']}...")
         try:
             offer = (
