@@ -70,7 +70,7 @@ def _cheapest_offer(data: dict) -> FlightOffer | None:
     )
 
 
-def search_round_trip(route: dict, config: dict) -> FlightOffer | None:
+def search_round_trip(route: dict, config: dict, stops_filter: int = 2) -> FlightOffer | None:
     dates = _sample_dates(config["date_start"], config["date_end"], config["sample_dates"])
     date_end = date.fromisoformat(config["date_end"])
     best: FlightOffer | None = None
@@ -87,7 +87,7 @@ def search_round_trip(route: dict, config: dict) -> FlightOffer | None:
                     "arrival_id": route["destination"],
                     "outbound_date": str(dep_date),
                     "return_date": str(ret_date),
-                    "stops": "2",   # 1 stop or fewer
+                    "stops": str(stops_filter),
                 })
                 offer = _cheapest_offer(data)
                 if offer:
@@ -99,7 +99,7 @@ def search_round_trip(route: dict, config: dict) -> FlightOffer | None:
     return best
 
 
-def search_multi_city(route: dict, config: dict) -> FlightOffer | None:
+def search_multi_city(route: dict, config: dict, stops_filter: int = 2) -> FlightOffer | None:
     dates = _sample_dates(config["date_start"], config["date_end"], config["sample_dates"])
     date_end = date.fromisoformat(config["date_end"])
     segs = route["segments"]
@@ -127,7 +127,7 @@ def search_multi_city(route: dict, config: dict) -> FlightOffer | None:
                     data = _search({
                         "type": "3",
                         "multi_city_json": multi_city_json,
-                        "stops": "2",   # 1 stop or fewer per leg
+                        "stops": str(stops_filter),
                     })
                     offer = _cheapest_offer(data)
                     if offer:

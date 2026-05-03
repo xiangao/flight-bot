@@ -12,7 +12,12 @@ class AlertResult:
     pct_below: float  # fraction: 0.13 means 13% cheaper than avg; 0.0 if no history
 
 
-def load_recent_prices(csv_path: Path, route_name: str, days: int = 7) -> list[float]:
+def load_recent_prices(
+    csv_path: Path,
+    route_name: str,
+    days: int = 7,
+    stops: int | None = None,
+) -> list[float]:
     if not csv_path.exists():
         return []
     cutoff = datetime.now() - timedelta(days=days)
@@ -20,6 +25,8 @@ def load_recent_prices(csv_path: Path, route_name: str, days: int = 7) -> list[f
     with open(csv_path) as f:
         for row in csv.DictReader(f):
             if row["route"] != route_name:
+                continue
+            if stops is not None and int(row["stops"]) != stops:
                 continue
             if datetime.fromisoformat(row["timestamp"]) >= cutoff:
                 prices.append(float(row["cheapest_price"]))
@@ -31,8 +38,9 @@ def analyze(
     route_name: str,
     current_price: float,
     threshold: float = 0.10,
+    stops: int | None = None,
 ) -> AlertResult:
-    recent = load_recent_prices(csv_path, route_name)
+    recent = load_recent_prices(csv_path, route_name, stops=stops)
     if len(recent) < 7:
         return AlertResult(
             should_alert=True,

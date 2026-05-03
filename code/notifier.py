@@ -19,6 +19,8 @@ class FlightResult:
     airline: str
 
 
+_STOP_LABEL = {0: "Nonstop", 1: "1 stop", 2: "2 stops"}
+
 _CSV_FIELDS = [
     "timestamp", "route", "cheapest_price", "currency",
     "departure_date", "final_leg_date", "stops", "airline",
@@ -52,10 +54,11 @@ def write_summary(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"Flight Price Report — {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"]
     for result, alert in zip(results, alerts):
-        lines.append(f"\n{result.route}")
+        label = _STOP_LABEL.get(result.stops, f"{result.stops} stops")
+        lines.append(f"\n{result.route}  [{label}]")
         lines.append(f"  Price:    ${result.cheapest_price:,.2f} {result.currency}")
         lines.append(f"  Dates:    {result.departure_date} → {result.final_leg_date}")
-        lines.append(f"  Airline:  {result.airline}  |  Stops: {result.stops}")
+        lines.append(f"  Airline:  {result.airline}")
         if alert.avg_price > 0:
             lines.append(
                 f"  Avg(7d):  ${alert.avg_price:,.2f}  ({alert.pct_below * 100:+.1f}%)"
@@ -84,5 +87,31 @@ def send_desktop_notification(result: FlightResult, alert: AlertResult) -> None:
         )
     subprocess.run(
         ["notify-send", f"✈ {result.route}", body, "--urgency=normal"],
+        check=False,
+    )
+
+
+def send_route_notification(
+    route_name: str,
+    pairs: list[tuple["FlightResult", AlertResult]],
+) -> None:
+    if not shutil.which("notify-send"):
+        print("WARNING: notify-send not available, skipping desktop notification")
+        return
+    lines = []
+    for result, alert in pairs:
+        label = _STOP_LABEL.get(result.stops, f"{result.stops} stops")
+        if alert.avg_price > 0:
+            lines.append(
+                f"{label}: ${result.cheapest_price:,.0f} ({result.airline})"
+                f" — {alert.pct_below * 100:.0f}% below avg"
+            )
+        else:
+            lines.append(
+                f"{label}: ${result.cheapest_price:,.0f} ({result.airline})"
+            )
+        lines.append(f"  {result.departure_date} → {result.final_leg_date}")
+    subprocess.run(
+        ["notify-send", f"✈ {route_name}", "\n".join(lines), "--urgency=normal"],
         check=False,
     )
