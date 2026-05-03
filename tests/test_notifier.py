@@ -1,7 +1,7 @@
 import csv
 import pytest
 from pathlib import Path
-from unittest.mock import patch, call
+from unittest.mock import patch
 from code.notifier import FlightResult, append_to_csv, write_summary, send_desktop_notification
 from code.analyzer import AlertResult
 
@@ -65,7 +65,7 @@ def test_write_summary_no_alert_marker_when_not_alerting(tmp_path):
 
 
 def test_send_notification_calls_notify_send():
-    with patch("shutil.which", return_value="/usr/bin/notify-send"):
+    with patch("code.notifier.shutil.which", return_value="/usr/bin/notify-send"):
         with patch("subprocess.run") as mock_run:
             send_desktop_notification(_result(), _alert())
             mock_run.assert_called_once()
@@ -76,7 +76,7 @@ def test_send_notification_calls_notify_send():
 
 
 def test_send_notification_skips_when_notify_send_missing():
-    with patch("shutil.which", return_value=None):
+    with patch("code.notifier.shutil.which", return_value=None):
         with patch("subprocess.run") as mock_run:
             send_desktop_notification(_result(), _alert())
             mock_run.assert_not_called()
