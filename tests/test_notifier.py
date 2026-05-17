@@ -10,7 +10,7 @@ def _result(route="Test Route", price=1500.0) -> FlightResult:
     return FlightResult(
         route=route, cheapest_price=price, currency="USD",
         departure_date="2026-09-15", final_leg_date="2026-10-06",
-        stops=1, airline="JAL",
+        stops=1, airline="JAL", details="Outbound: JAL, 1 stop, 15h\n  BOS -> HKG",
     )
 
 
@@ -29,6 +29,7 @@ def test_append_creates_csv_with_header(tmp_path):
     assert len(rows) == 1
     assert rows[0]["route"] == "Test Route"
     assert rows[0]["cheapest_price"] == "1500.0"
+    assert "Outbound" in rows[0]["details"]
     assert "timestamp" in rows[0]
 
 
@@ -54,6 +55,8 @@ def test_write_summary_contains_route_and_price(tmp_path):
     content = out.read_text()
     assert "Test Route" in content
     assert "1,500.00" in content
+    assert "Details:" in content
+    assert "Outbound" in content
     assert "ALERT" in content
 
 

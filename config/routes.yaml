@@ -1,6 +1,7 @@
 routes:
   - name: "Asia Grand Tour"
     type: multi_city
+    provider: serpapi
     segments:
       - origin: BOS
         destination: NRT
@@ -14,16 +15,28 @@ routes:
         destination: BOS
     max_stops: 1
 
-  - name: "Boston-HongKong RT"
+  - name: "Boston-China 3-week"
     type: round_trip
+    provider: ignav
     origin: BOS
-    destination: HKG
-    stay_min: 18
-    stay_max: 25
+    destinations:
+      - code: PEK
+        name: Beijing
+      - code: PVG
+        name: Shanghai
+      - code: HKG
+        name: Hong Kong
+    stay_min: 21
+    stay_max: 30
+    stay_step: 3
     max_stops: 1
 
 search:
+  provider: ignav
   date_start: "2026-09-01"
   date_end: "2026-11-30"
-  sample_dates: 4
+  sample_dates: 2
   alert_threshold: 0.10
+  cache_hours: 6
+  market: US
+  cabin_class: economy

@@ -17,13 +17,14 @@ class FlightResult:
     final_leg_date: str
     stops: int
     airline: str
+    details: str = ""
 
 
 _STOP_LABEL = {0: "Nonstop", 1: "1 stop", 2: "2 stops"}
 
 _CSV_FIELDS = [
     "timestamp", "route", "cheapest_price", "currency",
-    "departure_date", "final_leg_date", "stops", "airline",
+    "departure_date", "final_leg_date", "stops", "airline", "details",
 ]
 
 
@@ -43,6 +44,7 @@ def append_to_csv(csv_path: Path, result: FlightResult) -> None:
             "final_leg_date": result.final_leg_date,
             "stops": result.stops,
             "airline": result.airline,
+            "details": result.details,
         })
 
 
@@ -59,6 +61,9 @@ def write_summary(
         lines.append(f"  Price:    ${result.cheapest_price:,.2f} {result.currency}")
         lines.append(f"  Dates:    {result.departure_date} → {result.final_leg_date}")
         lines.append(f"  Airline:  {result.airline}")
+        if result.details:
+            lines.append("  Details:")
+            lines.extend(f"    {line}" if line else "" for line in result.details.splitlines())
         if alert.avg_price > 0:
             lines.append(
                 f"  Avg(7d):  ${alert.avg_price:,.2f}  ({alert.pct_below * 100:+.1f}%)"
@@ -85,6 +90,8 @@ def send_desktop_notification(result: FlightResult, alert: AlertResult) -> None:
             f"Best dates: {result.departure_date} → {result.final_leg_date}"
             f"  |  {result.airline}, {result.stops} stop(s)"
         )
+    if result.details:
+        body = f"{body}\n{result.details[:300]}"
     subprocess.run(
         ["notify-send", f"✈ {result.route}", body, "--urgency=normal"],
         check=False,
@@ -111,6 +118,8 @@ def send_route_notification(
                 f"{label}: ${result.cheapest_price:,.0f} ({result.airline})"
             )
         lines.append(f"  {result.departure_date} → {result.final_leg_date}")
+        if result.details:
+            lines.extend(f"  {line}" for line in result.details.splitlines()[:3])
     subprocess.run(
         ["notify-send", f"✈ {route_name}", "\n".join(lines), "--urgency=normal"],
         check=False,
