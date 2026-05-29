@@ -1,7 +1,7 @@
 import json
 import os
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -18,6 +18,18 @@ EXCLUDED_AIRLINES = {"Turkish Airlines"}
 
 
 @dataclass
+class SegmentInfo:
+    flight: str        # e.g. "CX 811"
+    from_airport: str  # e.g. "BOS"
+    to_airport: str    # e.g. "HKG"
+    dep_local: str     # e.g. "2026-10-15 01:45"
+    arr_local: str     # e.g. "2026-10-16 05:00"
+    duration_min: int
+    aircraft: str      # e.g. "Airbus A350"
+    layover_min: int   # minutes to next segment; 0 if this is the last segment
+
+
+@dataclass
 class FlightOffer:
     price: float
     currency: str
@@ -25,7 +37,11 @@ class FlightOffer:
     final_leg_date: str   # last leg departure date (YYYY-MM-DD)
     stops: int            # stops on outbound/first leg
     airline: str          # primary airline of first leg
-    details: str = ""     # human-readable itinerary details
+    details: str = ""     # human-readable itinerary (for CSV / notifications)
+    outbound_segments: list = field(default_factory=list)   # list[SegmentInfo]
+    inbound_segments: list = field(default_factory=list)    # list[SegmentInfo]
+    outbound_duration_min: int | None = None
+    inbound_duration_min: int | None = None
 
 
 def _destination_options(route: dict) -> list[tuple[str, str]]:
@@ -148,67 +164,6 @@ def _format_leg(label: str, leg: dict | None) -> str:
     return "\n".join(pieces)
 
 
-def _search(params: dict, cache_hours: float = 6) -> dict:
-    cache_key = {k: v for k, v in params.items() if k != "api_key"}
-    cache_path = _cache_path("serpapi", "google_flights", cache_key)
-    cached = _read_cache(cache_path, cache_hours)
-    if cached is not None:
-        return cached
-
-    params.update({
-        "engine": "google_flights",
-        "api_key": _api_key(),
-        "currency": "USD",
-        "hl": "en",
-        "adults": "1",
-        "sort_by": "2",   # sort by price
-    })
-    resp = requests.get(SERPAPI_URL, params=params, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    _write_cache(cache_path, data)
-    return data
-
-
-def _cheapest_offer(data: dict) -> FlightOffer | None:
-    offers = data.get("best_flights", []) + data.get("other_flights", [])
-    valid = [
-        o for o in offers
-        if "price" in o and o.get("flights")
-        and o["flights"][0].get("airline") not in EXCLUDED_AIRLINES
-    ]
-    if not valid:
-        return None
-    best = min(valid, key=lambda o: o["price"])
-    flights = best["flights"]
-    first_flight = flights[0]
-    departure_date = first_flight["departure_airport"]["time"][:10]
-    stops = len(best.get("layovers", []))
-    airline = first_flight.get("airline", "Unknown")
-    segments = []
-    for flight in flights:
-        segments.append({
-            "airline": flight.get("airline"),
-            "departure_airport": flight.get("departure_airport", {}),
-            "arrival_airport": flight.get("arrival_airport", {}),
-            "duration": flight.get("duration"),
-        })
-    outbound = {
-        "carrier": airline,
-        "duration_minutes": best.get("total_duration"),
-        "segments": segments,
-    }
-    return FlightOffer(
-        price=float(best["price"]),
-        currency="USD",
-        departure_date=departure_date,
-        final_leg_date="",   # filled in by caller
-        stops=stops,
-        airline=airline,
-        details=_format_leg("Outbound", outbound),
-    )
-
-
 def _cache_path(provider: str, endpoint: str, payload: dict) -> Path:
     raw = json.dumps(
         {"provider": provider, "endpoint": endpoint, "payload": payload},
@@ -233,6 +188,28 @@ def _write_cache(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         json.dump(data, f)
+
+
+def _search(params: dict, cache_hours: float = 6) -> dict:
+    cache_key = {k: v for k, v in params.items() if k != "api_key"}
+    cache_path = _cache_path("serpapi", "google_flights", cache_key)
+    cached = _read_cache(cache_path, cache_hours)
+    if cached is not None:
+        return cached
+
+    params.update({
+        "engine": "google_flights",
+        "api_key": _api_key(),
+        "currency": "USD",
+        "hl": "en",
+        "adults": "1",
+        "sort_by": "2",
+    })
+    resp = requests.get(SERPAPI_URL, params=params, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    _write_cache(cache_path, data)
+    return data
 
 
 def _ignav_post(endpoint: str, payload: dict, config: dict) -> dict:
@@ -261,8 +238,9 @@ def _ignav_request_base(config: dict, max_stops: int | None) -> dict:
         "market": config.get("market", "US"),
         "allow_self_transfer": bool(config.get("allow_self_transfer", True)),
     }
-    if max_stops is not None:
-        body["max_stops"] = max(0, min(int(max_stops), 2))
+    # Only send max_stops when > 0 (server-side 0 breaks Ignav; we filter client-side)
+    if max_stops is not None and max_stops > 0:
+        body["max_stops"] = max(1, min(int(max_stops), 2))
     for key in ("children", "infants_in_seat", "infants_on_lap", "min_carry_on_bags",
                 "min_checked_bags", "max_price", "airlines_include", "airlines_exclude"):
         if key in config:
@@ -270,7 +248,91 @@ def _ignav_request_base(config: dict, max_stops: int | None) -> dict:
     return body
 
 
-def _ignav_cheapest_offer(data: dict) -> FlightOffer | None:
+# ── Ignav segment extraction ──────────────────────────────────────────────────
+
+def _extract_ignav_segments(leg: dict) -> tuple[list, int]:
+    """Return (list[SegmentInfo], total_duration_min) for one Ignav leg."""
+    segments = leg.get("segments") or []
+    result = []
+    for i, seg in enumerate(segments):
+        parts = [seg.get("marketing_carrier_code"), seg.get("flight_number")]
+        flight = " ".join(str(x) for x in parts if x)
+        dep_local = _time_label(seg.get("departure_time_local") or seg.get("departure_time_utc"))
+        arr_local = _time_label(seg.get("arrival_time_local") or seg.get("arrival_time_utc"))
+        duration_min = int(seg.get("duration_minutes") or 0)
+        aircraft = seg.get("aircraft") or ""
+
+        layover_min = 0
+        if i < len(segments) - 1:
+            next_seg = segments[i + 1]
+            try:
+                arr_str = seg.get("arrival_time_utc", "").replace("Z", "+00:00")
+                dep_str = next_seg.get("departure_time_utc", "").replace("Z", "+00:00")
+                layover_min = int(
+                    (datetime.fromisoformat(dep_str) - datetime.fromisoformat(arr_str)).total_seconds() / 60
+                )
+            except (ValueError, TypeError):
+                pass
+
+        result.append(SegmentInfo(
+            flight=flight,
+            from_airport=seg.get("departure_airport") or "",
+            to_airport=seg.get("arrival_airport") or "",
+            dep_local=dep_local,
+            arr_local=arr_local,
+            duration_min=duration_min,
+            aircraft=aircraft,
+            layover_min=layover_min,
+        ))
+
+    total = int(leg.get("duration_minutes") or sum(s.duration_min for s in result))
+    return result, total
+
+
+def _build_ignav_offer(item: dict) -> FlightOffer:
+    """Build a rich FlightOffer from a single Ignav itinerary dict."""
+    outbound = item["outbound"]
+    segments = outbound["segments"]
+    first_seg = segments[0]
+    airline = outbound.get("carrier") or first_seg.get("marketing_carrier_code") or "Unknown"
+    out_segs, out_dur = _extract_ignav_segments(outbound)
+    inb_segs, inb_dur = _extract_ignav_segments(item.get("inbound") or {})
+    return FlightOffer(
+        price=float(item["price"]["amount"]),
+        currency=item["price"].get("currency", "USD"),
+        departure_date=first_seg["departure_time_local"][:10],
+        final_leg_date="",
+        stops=max(len(segments) - 1, 0),
+        airline=airline,
+        details="\n".join(
+            part for part in [
+                _format_leg("Outbound", item.get("outbound")),
+                _format_leg("Inbound", item.get("inbound")),
+            ] if part
+        ),
+        outbound_segments=out_segs,
+        inbound_segments=inb_segs,
+        outbound_duration_min=out_dur or None,
+        inbound_duration_min=inb_dur or None,
+    )
+
+
+def _ignav_cheapest_offer(data: dict, max_stops: int | None = None) -> FlightOffer | None:
+    itineraries = data.get("itineraries", [])
+    valid = [
+        item for item in itineraries
+        if item.get("price", {}).get("amount") is not None
+        and item.get("outbound", {}).get("segments")
+        and item.get("outbound", {}).get("carrier") not in EXCLUDED_AIRLINES
+        and (max_stops is None or len(item["outbound"]["segments"]) - 1 <= max_stops)
+    ]
+    if not valid:
+        return None
+    return _build_ignav_offer(min(valid, key=lambda item: float(item["price"]["amount"])))
+
+
+def _ignav_offers_by_stops(data: dict) -> dict:
+    """Return {0: nonstop_offer, 1: one_stop_offer} from a single Ignav API response."""
     itineraries = data.get("itineraries", [])
     valid = [
         item for item in itineraries
@@ -278,52 +340,73 @@ def _ignav_cheapest_offer(data: dict) -> FlightOffer | None:
         and item.get("outbound", {}).get("segments")
         and item.get("outbound", {}).get("carrier") not in EXCLUDED_AIRLINES
     ]
-    if not valid:
-        return None
+    result: dict = {0: None, 1: None}
+    for stop_count in (0, 1):
+        candidates = [
+            item for item in valid
+            if len(item["outbound"]["segments"]) - 1 == stop_count
+        ]
+        if candidates:
+            best = min(candidates, key=lambda item: float(item["price"]["amount"]))
+            result[stop_count] = _build_ignav_offer(best)
+    return result
 
-    best = min(valid, key=lambda item: float(item["price"]["amount"]))
-    outbound = best["outbound"]
-    segments = outbound["segments"]
-    first_segment = segments[0]
-    airline = outbound.get("carrier") or first_segment.get("marketing_carrier_code") or "Unknown"
 
+# ── SerpAPI offer extraction ──────────────────────────────────────────────────
+
+def _serpapi_build_offer(best: dict, stop_count: int) -> FlightOffer:
+    flights = best["flights"]
+    first_flight = flights[0]
+    departure_date = first_flight["departure_airport"]["time"][:10]
+    airline = first_flight.get("airline", "Unknown")
+    outbound = {
+        "carrier": airline,
+        "duration_minutes": best.get("total_duration"),
+        "segments": [
+            {
+                "airline": f.get("airline"),
+                "departure_airport": f.get("departure_airport", {}),
+                "arrival_airport": f.get("arrival_airport", {}),
+                "duration": f.get("duration"),
+            }
+            for f in flights
+        ],
+    }
     return FlightOffer(
-        price=float(best["price"]["amount"]),
-        currency=best["price"].get("currency", "USD"),
-        departure_date=first_segment["departure_time_local"][:10],
+        price=float(best["price"]),
+        currency="USD",
+        departure_date=departure_date,
         final_leg_date="",
-        stops=max(len(segments) - 1, 0),
+        stops=stop_count,
         airline=airline,
-        details="\n".join(
-            part for part in [
-                _format_leg("Outbound", best.get("outbound")),
-                _format_leg("Inbound", best.get("inbound")),
-            ] if part
-        ),
+        details=_format_leg("Outbound", outbound),
     )
 
 
-def _search_ignav_one_way(
-    origin: str,
-    destination: str,
-    dep_date: date,
-    config: dict,
-    max_stops: int | None,
-) -> FlightOffer | None:
-    payload = _ignav_request_base(config, max_stops)
-    payload.update({
-        "origin": origin,
-        "destination": destination,
-        "departure_date": str(dep_date),
-    })
-    data = _ignav_post("/fares/one-way", payload, config)
-    return _ignav_cheapest_offer(data)
+def _cheapest_offers_by_stops(data: dict) -> dict:
+    """Return {0: nonstop_offer, 1: one_stop_offer} from a SerpAPI response."""
+    offers = data.get("best_flights", []) + data.get("other_flights", [])
+    valid = [
+        o for o in offers
+        if "price" in o and o.get("flights")
+        and o["flights"][0].get("airline") not in EXCLUDED_AIRLINES
+    ]
+    result: dict = {0: None, 1: None}
+    for stop_count in (0, 1):
+        candidates = [o for o in valid if len(o.get("layovers", [])) == stop_count]
+        if candidates:
+            best = min(candidates, key=lambda o: o["price"])
+            result[stop_count] = _serpapi_build_offer(best, stop_count)
+    return result
 
 
-def search_round_trip_serpapi(route: dict, config: dict, stops_filter: int = 2) -> FlightOffer | None:
+# ── Round-trip search ─────────────────────────────────────────────────────────
+
+def search_round_trip_serpapi(route: dict, config: dict, stops_filter: int = 2) -> dict:
+    """Return {0: nonstop_offer, 1: one_stop_offer} — cheapest across all date combos."""
     dates = _sample_dates(config["date_start"], config["date_end"], config["sample_dates"])
     date_end = date.fromisoformat(config["date_end"])
-    best: FlightOffer | None = None
+    best: dict = {0: None, 1: None}
 
     for destination, destination_name in _destination_options(route):
         for dep_date in dates:
@@ -338,23 +421,25 @@ def search_round_trip_serpapi(route: dict, config: dict, stops_filter: int = 2) 
                         "arrival_id": destination,
                         "outbound_date": str(dep_date),
                         "return_date": str(ret_date),
-                        "stops": str(stops_filter),
+                        "stops": "2",  # fetch all; filter client-side
                     }, cache_hours=float(config.get("cache_hours", 6)))
-                    offer = _cheapest_offer(data)
-                    if offer:
-                        offer.final_leg_date = str(ret_date)
-                        _annotate_destination(offer, destination_name)
-                        if best is None or offer.price < best.price:
-                            best = offer
+                    offers = _cheapest_offers_by_stops(data)
+                    for stop_count, offer in offers.items():
+                        if offer:
+                            offer.final_leg_date = str(ret_date)
+                            _annotate_destination(offer, destination_name)
+                            if best[stop_count] is None or offer.price < best[stop_count].price:
+                                best[stop_count] = offer
                 except Exception as e:
                     print(f"WARNING [{route['origin']}-{destination} {dep_date}]: {e}")
     return best
 
 
-def search_round_trip_ignav(route: dict, config: dict, max_stops: int | None = 1) -> FlightOffer | None:
+def search_round_trip_ignav(route: dict, config: dict, max_stops: int | None = 1) -> dict:
+    """Return {0: nonstop_offer, 1: one_stop_offer} from Ignav — single API call per date combo."""
     dates = _sample_dates(config["date_start"], config["date_end"], config["sample_dates"])
     date_end = date.fromisoformat(config["date_end"])
-    best: FlightOffer | None = None
+    best: dict = {0: None, 1: None}
 
     for destination, destination_name in _destination_options(route):
         for dep_date in dates:
@@ -363,7 +448,8 @@ def search_round_trip_ignav(route: dict, config: dict, max_stops: int | None = 1
                 if ret_date > date_end:
                     continue
                 try:
-                    payload = _ignav_request_base(config, max_stops)
+                    # No server-side max_stops — fetch all itineraries, split client-side
+                    payload = _ignav_request_base(config, None)
                     payload.update({
                         "origin": route["origin"],
                         "destination": destination,
@@ -371,28 +457,55 @@ def search_round_trip_ignav(route: dict, config: dict, max_stops: int | None = 1
                         "return_date": str(ret_date),
                     })
                     data = _ignav_post("/fares/round-trip", payload, config)
-                    offer = _ignav_cheapest_offer(data)
-                    if offer:
-                        offer.final_leg_date = str(ret_date)
-                        _annotate_destination(offer, destination_name)
-                        if best is None or offer.price < best.price:
-                            best = offer
+                    offers = _ignav_offers_by_stops(data)
+                    for stop_count, offer in offers.items():
+                        if offer:
+                            offer.final_leg_date = str(ret_date)
+                            _annotate_destination(offer, destination_name)
+                            if best[stop_count] is None or offer.price < best[stop_count].price:
+                                best[stop_count] = offer
                 except Exception as e:
                     print(f"WARNING [Ignav {route['origin']}-{destination} {dep_date}]: {e}")
     return best
 
 
-def search_round_trip(route: dict, config: dict, stops_filter: int = 2) -> FlightOffer | None:
+def search_round_trip(route: dict, config: dict, stops_filter: int = 2) -> dict:
     if _provider(config) == "ignav":
-        return search_round_trip_ignav(route, config, max_stops=stops_filter)
-    return search_round_trip_serpapi(route, config, stops_filter=stops_filter)
+        return search_round_trip_ignav(route, config)
+    return search_round_trip_serpapi(route, config)
 
 
-def search_multi_city_serpapi(route: dict, config: dict, stops_filter: int = 2) -> FlightOffer | None:
+# ── Multi-city search ─────────────────────────────────────────────────────────
+
+def _combine_legs(legs: list, final_date: date, stops: int) -> FlightOffer:
+    """Merge three one-way FlightOffers into a single multi-city FlightOffer."""
+    l1, l2, l3 = legs
+    return FlightOffer(
+        price=l1.price + l2.price + l3.price,
+        currency=l1.currency,
+        departure_date=l1.departure_date,
+        final_leg_date=str(final_date),
+        stops=stops,
+        airline=" + ".join([l1.airline, l2.airline, l3.airline]),
+        details="\n\n".join(
+            part for part in [
+                f"Leg 1:\n{l1.details}" if l1.details else "",
+                f"Leg 2:\n{l2.details}" if l2.details else "",
+                f"Leg 3:\n{l3.details}" if l3.details else "",
+            ] if part
+        ),
+        outbound_segments=l1.outbound_segments,
+        inbound_segments=l3.outbound_segments,
+        outbound_duration_min=l1.outbound_duration_min,
+        inbound_duration_min=l3.outbound_duration_min,
+    )
+
+
+def search_multi_city_serpapi(route: dict, config: dict, stops_filter: int = 2) -> dict:
     dates = _sample_dates(config["date_start"], config["date_end"], config["sample_dates"])
     date_end = date.fromisoformat(config["date_end"])
     segs = route["segments"]
-    best: FlightOffer | None = None
+    best: dict = {0: None, 1: None}
 
     for dep_date in dates:
         for stay1 in _stay_options(segs[0]):
@@ -416,23 +529,24 @@ def search_multi_city_serpapi(route: dict, config: dict, stops_filter: int = 2) 
                     data = _search({
                         "type": "3",
                         "multi_city_json": multi_city_json,
-                        "stops": str(stops_filter),
+                        "stops": "2",
                     }, cache_hours=float(config.get("cache_hours", 6)))
-                    offer = _cheapest_offer(data)
-                    if offer:
-                        offer.final_leg_date = str(ret_date)
-                        if best is None or offer.price < best.price:
-                            best = offer
+                    offers = _cheapest_offers_by_stops(data)
+                    for stop_count, offer in offers.items():
+                        if offer:
+                            offer.final_leg_date = str(ret_date)
+                            if best[stop_count] is None or offer.price < best[stop_count].price:
+                                best[stop_count] = offer
                 except Exception as e:
                     print(f"WARNING [multi-city {dep_date}/{stay1}/{stay2}]: {e}")
     return best
 
 
-def search_multi_city_ignav(route: dict, config: dict, max_stops: int | None = 1) -> FlightOffer | None:
+def search_multi_city_ignav(route: dict, config: dict, max_stops: int | None = 1) -> dict:
     dates = _sample_dates(config["date_start"], config["date_end"], config["sample_dates"])
     date_end = date.fromisoformat(config["date_end"])
     segs = route["segments"]
-    best: FlightOffer | None = None
+    best: dict = {0: None, 1: None}
 
     for dep_date in dates:
         for stay1 in _stay_options(segs[0]):
@@ -442,37 +556,38 @@ def search_multi_city_ignav(route: dict, config: dict, max_stops: int | None = 1
                 if ret_date > date_end:
                     continue
                 try:
-                    leg1 = _search_ignav_one_way(segs[0]["origin"], segs[0]["destination"], dep_date, config, max_stops)
-                    leg2 = _search_ignav_one_way(segs[1]["origin"], segs[1]["destination"], mid_date, config, max_stops)
-                    leg3 = _search_ignav_one_way(segs[2]["origin"], segs[2]["destination"], ret_date, config, max_stops)
-                    if not leg1 or not leg2 or not leg3:
-                        continue
-                    currency = leg1.currency
-                    if len({leg1.currency, leg2.currency, leg3.currency}) != 1:
-                        continue
-                    offer = FlightOffer(
-                        price=leg1.price + leg2.price + leg3.price,
-                        currency=currency,
-                        departure_date=leg1.departure_date,
-                        final_leg_date=str(ret_date),
-                        stops=max(leg1.stops, leg2.stops, leg3.stops),
-                        airline=" + ".join([leg1.airline, leg2.airline, leg3.airline]),
-                        details="\n\n".join(
-                            part for part in [
-                                f"Leg 1:\n{leg1.details}" if leg1.details else "",
-                                f"Leg 2:\n{leg2.details}" if leg2.details else "",
-                                f"Leg 3:\n{leg3.details}" if leg3.details else "",
-                            ] if part
-                        ),
-                    )
-                    if best is None or offer.price < best.price:
-                        best = offer
+                    # Fetch each leg without server-side max_stops; filter client-side per target
+                    payload1 = _ignav_request_base(config, None)
+                    payload1.update({"origin": segs[0]["origin"], "destination": segs[0]["destination"],
+                                     "departure_date": str(dep_date)})
+                    payload2 = _ignav_request_base(config, None)
+                    payload2.update({"origin": segs[1]["origin"], "destination": segs[1]["destination"],
+                                     "departure_date": str(mid_date)})
+                    payload3 = _ignav_request_base(config, None)
+                    payload3.update({"origin": segs[2]["origin"], "destination": segs[2]["destination"],
+                                     "departure_date": str(ret_date)})
+                    data1 = _ignav_post("/fares/one-way", payload1, config)
+                    data2 = _ignav_post("/fares/one-way", payload2, config)
+                    data3 = _ignav_post("/fares/one-way", payload3, config)
+
+                    for target_stops in (0, 1):
+                        l1 = _ignav_cheapest_offer(data1, max_stops=target_stops)
+                        l2 = _ignav_cheapest_offer(data2, max_stops=target_stops)
+                        l3 = _ignav_cheapest_offer(data3, max_stops=target_stops)
+                        if not (l1 and l2 and l3):
+                            continue
+                        if len({l1.currency, l2.currency, l3.currency}) != 1:
+                            continue
+                        actual_stops = max(l1.stops, l2.stops, l3.stops)
+                        offer = _combine_legs([l1, l2, l3], ret_date, actual_stops)
+                        if best[target_stops] is None or offer.price < best[target_stops].price:
+                            best[target_stops] = offer
                 except Exception as e:
                     print(f"WARNING [Ignav multi-city {dep_date}/{stay1}/{stay2}]: {e}")
     return best
 
 
-def search_multi_city(route: dict, config: dict, stops_filter: int = 2) -> FlightOffer | None:
+def search_multi_city(route: dict, config: dict, stops_filter: int = 2) -> dict:
     if _provider(config) == "ignav":
-        return search_multi_city_ignav(route, config, max_stops=stops_filter)
-    return search_multi_city_serpapi(route, config, stops_filter=stops_filter)
+        return search_multi_city_ignav(route, config)
+    return search_multi_city_serpapi(route, config)

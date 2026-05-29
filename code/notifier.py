@@ -1,7 +1,7 @@
 import csv
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +18,10 @@ class FlightResult:
     stops: int
     airline: str
     details: str = ""
+    outbound_segments: list = field(default_factory=list)   # list[SegmentInfo] — runtime only, not in CSV
+    inbound_segments: list = field(default_factory=list)
+    outbound_duration_min: int | None = None
+    inbound_duration_min: int | None = None
 
 
 _STOP_LABEL = {0: "Nonstop", 1: "1 stop", 2: "2 stops"}
