@@ -64,6 +64,8 @@ td.price-cell { font-weight: 600; color: #111; }
 td.low        { color: #16a34a; font-weight: 700; }
 td.empty      { color: #cbd5e1; }
 td.dates-cell { white-space: nowrap; }
+td.leg-cell   { white-space: nowrap; color: #475569; }
+.hist-wrap    { overflow-x: auto; }
 table a       { color: #2563eb; text-decoration: none; font-weight: 600; }
 table a:hover { text-decoration: underline; }
 """
@@ -113,12 +115,45 @@ def _load_history(csv_path: Path, route: str, days: int = 90) -> list[dict]:
     return sorted(by_date_stops.values(), key=lambda r: r["ts"], reverse=True)
 
 
-def _stops_label(stops: int) -> str:
-    if stops == 0:
-        return "nonstop"
-    if stops < 0:
+def _parse_legs(details: str) -> dict:
+    """Parse the CSV `details` itinerary text into per-leg duration + stops.
+
+    Returns ``{'outbound': {...}, 'inbound': {...}}`` where each value is
+    ``{'dur_min': int, 'via': [codes], 'stop_count': int}``. Missing legs are
+    absent (e.g. the multi-city CSV has no details at all → empty dict).
+    """
+    legs: dict = {}
+    if not details:
+        return legs
+    # Split into chunks each beginning with an "Outbound:" / "Inbound:" header
+    for part in re.split(r"\n(?=(?:Outbound|Inbound):)", details.strip()):
+        m = re.match(
+            r"(Outbound|Inbound):\s*.*?,\s*(\d+)\s*stop\(s\)"
+            r"(?:,\s*(\d+)h(?:\s*(\d+)m)?)?",
+            part,
+        )
+        if not m:
+            continue
+        h = int(m.group(3)) if m.group(3) else 0
+        mm = int(m.group(4)) if m.group(4) else 0
+        # Connection airports = arrival of every segment except the last
+        seg_pairs = re.findall(r"\b([A-Z]{3})\b[^\n]*?->\s*([A-Z]{3})\b", part)
+        via = [arr for _, arr in seg_pairs[:-1]] if len(seg_pairs) > 1 else []
+        legs[m.group(1).lower()] = {
+            "dur_min": h * 60 + mm,
+            "via": via,
+            "stop_count": int(m.group(2)),
+        }
+    return legs
+
+
+def _leg_summary(leg: dict | None) -> str:
+    """'via LAX · 21h 30m', or 'nonstop · 15h 15m', or '—'."""
+    if not leg:
         return "—"
-    return f"{stops} stop" + ("s" if stops > 1 else "")
+    dur = _duration_label(leg["dur_min"])
+    where = f"via {', '.join(leg['via'])}" if leg["via"] else "nonstop"
+    return f"{where} · {dur}" if dur else where
 
 
 def _fmt_travel_dates(departure: str, ret: str) -> str:
@@ -170,24 +205,34 @@ def _gflights_link(origin: str, dest: str, departure: str, ret: str) -> str:
     return "https://www.google.com/travel/flights?q=" + quote_plus(q)
 
 
-def _history_table(rows: list[dict], route_cfg: dict) -> str:
-    if not rows:
-        return "<p style='color:#aaa;font-size:0.85rem'>No history yet.</p>"
+def _history_table(rows: list[dict], route_cfg: dict, stops: int) -> str:
+    """Render one history section (heading + table) for a single stop count.
 
-    # All-time low per stop count, for highlighting
-    lows: dict = {}
-    for r in rows:
-        s = r["stops"]
-        if s not in lows or r["price"] < lows[s]:
-            lows[s] = r["price"]
+    Returns "" when there is no history for this stop count, so the caller can
+    omit the section entirely. The `stops` filter is on the CSV `stops` column,
+    which is the *outbound* stop count; both leg summaries are shown so the
+    inbound (which may differ) stays visible.
+    """
+    sub = [r for r in rows if r["stops"] == stops]
+    if not sub:
+        return ""
+
+    label = "Nonstop" if stops == 0 else f"{stops} Stop" + ("s" if stops > 1 else "")
+    lo = min(r["price"] for r in sub)
 
     html = [
-        "<table><tr><th>Date</th><th>Stops</th><th>Price</th>"
-        "<th>Airline</th><th>Travel dates</th><th></th></tr>"
+        f"<h3>{label} — Price History</h3>",
+        '<div class="hist-wrap"><table><tr>'
+        "<th>Date</th><th>Price</th><th>Airline</th><th>Travel dates</th>"
+        "<th>Outbound</th><th>Inbound</th><th>Total</th><th></th></tr>",
     ]
-    for r in rows[:30]:  # cap at 30 rows
-        lo = lows.get(r["stops"])
-        cls = 'class="price-cell low"' if (lo is not None and r["price"] <= lo) else 'class="price-cell"'
+    for r in sub[:30]:  # cap at 30 rows
+        legs = _parse_legs(r.get("details", ""))
+        out, inb = legs.get("outbound"), legs.get("inbound")
+        total_min = (out["dur_min"] if out else 0) + (inb["dur_min"] if inb else 0)
+        total = _duration_label(total_min) if total_min else "—"
+
+        cls = 'class="price-cell low"' if r["price"] <= lo else 'class="price-cell"'
         origin, dest = _airport_codes_from_details(r.get("details", ""), route_cfg)
         link_url = _gflights_link(origin, dest, r["departure"], r["return"])
         link = (
@@ -197,14 +242,16 @@ def _history_table(rows: list[dict], route_cfg: dict) -> str:
         html.append(
             "<tr>"
             f"<td>{r['date']}</td>"
-            f"<td>{_stops_label(r['stops'])}</td>"
             f"<td {cls}>${r['price']:,.0f}</td>"
             f"<td>{r['airline']}</td>"
             f"<td class=\"dates-cell\">{_fmt_travel_dates(r['departure'], r['return'])}</td>"
+            f"<td class=\"leg-cell\">{_leg_summary(out)}</td>"
+            f"<td class=\"leg-cell\">{_leg_summary(inb)}</td>"
+            f"<td class=\"dates-cell\">{total}</td>"
             f"<td>{link}</td>"
             "</tr>"
         )
-    html.append("</table>")
+    html.append("</table></div>")
     return "\n".join(html)
 
 
@@ -300,7 +347,9 @@ def _render_card(
     if not results and not history:
         return ""
 
-    hist_html = _history_table(history, route_cfg)
+    hist_html = _history_table(history, route_cfg, 0) + _history_table(history, route_cfg, 1)
+    if not hist_html:
+        hist_html = "<h3>Price History</h3><p style='color:#aaa;font-size:0.85rem'>No history yet.</p>"
     return f"""<div class="card">
   <div class="card-header">
     <div class="route-name">{route_name}</div>
@@ -310,7 +359,6 @@ def _render_card(
       {panel_0}
       {panel_1}
     </div>
-    <h3>Price History</h3>
     {hist_html}
   </div>
 </div>"""

@@ -30,7 +30,7 @@ routes:
     stay_min: 21
     stay_max: 30
     stay_step: 3
-    max_stops: 0
+    max_stops: 1   # show both nonstop and 1-stop live panels
 
 search:
   provider: ignav

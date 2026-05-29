@@ -34,18 +34,26 @@ Configured in `config/routes.yaml`. Date window and alert threshold are in the `
 - `output/latest.txt` — last run summary
 - `site/` — separate git repo, gh-pages branch → https://xiangao.github.io/flight-bot-site/
 
-### Dashboard price-history table
+### Dashboard price-history tables
 
-`code/html_writer.py:_history_table` renders a flat detail row per (date, stop-count):
-Date · Stops · Price · Airline · Travel dates · link. All fields come straight
-from the CSV — no extra API calls.
+`code/html_writer.py:_history_table(rows, route_cfg, stops)` renders **one section
+per stop count** — `_render_card` calls it for 0 and 1, so each route card shows a
+separate "Nonstop — Price History" and "1 Stop — Price History" table (a section is
+omitted when that stop count has no rows). Columns: Date · Price · Airline · Travel
+dates · Outbound · Inbound · Total · link. All from the CSV — no extra API calls.
 
+- **The `stops` split is on the CSV `stops` column = the *outbound* stop count.**
+  Both leg summaries are shown because the inbound can differ (e.g. a nonstop
+  outbound with a 1-stop inbound).
+- **Leg durations + connection airports are parsed from the `details` text**
+  (`_parse_legs`): each `Outbound:/Inbound:` header gives the leg duration and stop
+  count; segment lines give the via-airports. Total = outbound + inbound.
 - **The "Search ↗" link is synthesized, not stored.** Neither Ignav nor SerpAPI
   returns a bookable deep link (Ignav gives only an internal `ignav_id`), so
   `_gflights_link` builds a Google Flights search URL from the row's
   origin/destination/dates. This stays valid for every historical row.
-- **Airport codes are parsed from the CSV `details` column** (`\b[A-Z]{3}\b` on
-  the outbound block) — ground truth for that row. The multi-city `prices.csv`
-  has no `details` column, so those rows get no link (route-config origin only).
+- **Airport codes / durations come from the CSV `details` column.** The multi-city
+  `prices.csv` has no `details`, so those rows show `—` for legs/total and no link
+  (route-config origin only).
 - History is sorted by the real ISO timestamp, not the `"%b %d"` label (the label
   isn't chronological across months).
