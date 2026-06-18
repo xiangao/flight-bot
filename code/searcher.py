@@ -64,6 +64,17 @@ def _stay_options(route: dict) -> list[int]:
     return list(dict.fromkeys([route["stay_min"], route["stay_max"]]))
 
 
+def _max_total_stay(route: dict) -> int:
+    """Longest possible trip length in days (first departure → final return).
+
+    Used so weekday sampling doesn't pick departures whose itinerary can't
+    return within the window — the search loops would filter those out anyway.
+    """
+    if route.get("type") == "multi_city":
+        return sum(max(_stay_options(s)) for s in route.get("segments", []) if "stay_min" in s)
+    return max(_stay_options(route)) if "stay_min" in route else 0
+
+
 def _annotate_destination(offer: FlightOffer, destination_name: str) -> FlightOffer:
     offer.airline = f"{offer.airline} to {destination_name}"
     return offer
@@ -87,13 +98,49 @@ def _provider(config: dict) -> str:
     return str(config.get("provider") or os.environ.get("FLIGHT_PROVIDER", "serpapi")).lower()
 
 
-def _sample_dates(start: str, end: str, n: int) -> list[date]:
+_WEEKDAY_NUM = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
+
+def _sample_dates(start: str, end: str, n: int, weekdays: list[str] | None = None) -> list[date]:
     d_start = date.fromisoformat(start)
     d_end = date.fromisoformat(end)
+    if weekdays:
+        # restrict to the given weekdays, then evenly sample n of those dates
+        want = {_WEEKDAY_NUM[w[:3].lower()] for w in weekdays}
+        span = max((d_end - d_start).days, 0)
+        matches = [d for i in range(span + 1)
+                   if (d := d_start + timedelta(days=i)).weekday() in want]
+        if not matches:
+            return [d_start]
+        if n <= 1 or n >= len(matches):
+            return matches[:1] if n <= 1 else matches
+        picks = [matches[round(i * (len(matches) - 1) / (n - 1))] for i in range(n)]
+        return list(dict.fromkeys(picks))
     if n <= 1:
         return [d_start]
     span = (d_end - d_start).days
     return [d_start + timedelta(days=round(i * span / (n - 1))) for i in range(n)]
+
+
+def _route_dates(route: dict, config: dict) -> tuple[list[date], date]:
+    """Effective (sampled departure dates, window end) for a route.
+
+    A route may override the global ``search:`` window with its own
+    ``date_start`` / ``date_end`` / ``sample_dates`` / ``weekdays``; anything
+    unset falls back to the global config. When ``weekdays`` is set, departures
+    are sampled only on those weekdays and only early enough that the longest
+    itinerary still returns by ``date_end``.
+    """
+    start = route.get("date_start", config["date_start"])
+    end = route.get("date_end", config["date_end"])
+    n = int(route.get("sample_dates", config["sample_dates"]))
+    end_date = date.fromisoformat(end)
+    weekdays = route.get("weekdays") or config.get("weekdays")
+    dep_end = end
+    if weekdays:
+        latest = end_date - timedelta(days=_max_total_stay(route))
+        dep_end = max(latest, date.fromisoformat(start)).isoformat()
+    return _sample_dates(start, dep_end, n, weekdays), end_date
 
 
 def _duration_label(minutes: int | float | None) -> str:
@@ -404,8 +451,7 @@ def _cheapest_offers_by_stops(data: dict) -> dict:
 
 def search_round_trip_serpapi(route: dict, config: dict, stops_filter: int = 2) -> dict:
     """Return {0: nonstop_offer, 1: one_stop_offer} — cheapest across all date combos."""
-    dates = _sample_dates(config["date_start"], config["date_end"], config["sample_dates"])
-    date_end = date.fromisoformat(config["date_end"])
+    dates, date_end = _route_dates(route, config)
     best: dict = {0: None, 1: None}
 
     for destination, destination_name in _destination_options(route):
@@ -437,8 +483,7 @@ def search_round_trip_serpapi(route: dict, config: dict, stops_filter: int = 2) 
 
 def search_round_trip_ignav(route: dict, config: dict, max_stops: int | None = 1) -> dict:
     """Return {0: nonstop_offer, 1: one_stop_offer} from Ignav — single API call per date combo."""
-    dates = _sample_dates(config["date_start"], config["date_end"], config["sample_dates"])
-    date_end = date.fromisoformat(config["date_end"])
+    dates, date_end = _route_dates(route, config)
     best: dict = {0: None, 1: None}
 
     for destination, destination_name in _destination_options(route):
@@ -502,8 +547,7 @@ def _combine_legs(legs: list, final_date: date, stops: int) -> FlightOffer:
 
 
 def search_multi_city_serpapi(route: dict, config: dict, stops_filter: int = 2) -> dict:
-    dates = _sample_dates(config["date_start"], config["date_end"], config["sample_dates"])
-    date_end = date.fromisoformat(config["date_end"])
+    dates, date_end = _route_dates(route, config)
     segs = route["segments"]
     best: dict = {0: None, 1: None}
 
@@ -543,8 +587,7 @@ def search_multi_city_serpapi(route: dict, config: dict, stops_filter: int = 2) 
 
 
 def search_multi_city_ignav(route: dict, config: dict, max_stops: int | None = 1) -> dict:
-    dates = _sample_dates(config["date_start"], config["date_end"], config["sample_dates"])
-    date_end = date.fromisoformat(config["date_end"])
+    dates, date_end = _route_dates(route, config)
     segs = route["segments"]
     best: dict = {0: None, 1: None}
 

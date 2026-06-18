@@ -2,6 +2,10 @@ routes:
   - name: "Asia Grand Tour"
     type: multi_city
     provider: serpapi
+    date_start: "2026-09-01"   # cheaper in September; overrides global Oct-Nov window
+    date_end: "2026-10-31"
+    weekdays: [Tue, Thu]       # Tue/Thu departures tend to be cheapest
+    sample_dates: 30           # high -> sampler returns EVERY Tue/Thu in the viable window
     segments:
       - origin: BOS
         destination: NRT
