@@ -42,6 +42,9 @@ class FlightOffer:
     inbound_segments: list = field(default_factory=list)    # list[SegmentInfo]
     outbound_duration_min: int | None = None
     inbound_duration_min: int | None = None
+    # SerpAPI round-trip only: token to fetch the matching return flights in a
+    # second call. Empty once the inbound leg has been resolved.
+    departure_token: str = ""
 
 
 def _destination_options(route: dict) -> list[tuple[str, str]]:
@@ -158,12 +161,10 @@ def _time_label(value: str | None) -> str:
 
 
 def _segment_airport(segment: dict, side: str) -> str:
-    return (
-        segment.get(f"{side}_airport")
-        or segment.get(f"{side}_airport_code")
-        or segment.get(f"{side}_airport", {}).get("id")
-        or ""
-    )
+    airport = segment.get(f"{side}_airport")
+    if isinstance(airport, dict):
+        return airport.get("id") or ""
+    return airport or segment.get(f"{side}_airport_code") or ""
 
 
 def _segment_time(segment: dict, side: str) -> str:
@@ -401,14 +402,12 @@ def _ignav_offers_by_stops(data: dict) -> dict:
 
 # ── SerpAPI offer extraction ──────────────────────────────────────────────────
 
-def _serpapi_build_offer(best: dict, stop_count: int) -> FlightOffer:
-    flights = best["flights"]
+def _serpapi_leg_dict(flights: list, total_duration) -> dict:
     first_flight = flights[0]
-    departure_date = first_flight["departure_airport"]["time"][:10]
     airline = first_flight.get("airline", "Unknown")
-    outbound = {
+    return {
         "carrier": airline,
-        "duration_minutes": best.get("total_duration"),
+        "duration_minutes": total_duration,
         "segments": [
             {
                 "airline": f.get("airline"),
@@ -419,6 +418,14 @@ def _serpapi_build_offer(best: dict, stop_count: int) -> FlightOffer:
             for f in flights
         ],
     }
+
+
+def _serpapi_build_offer(best: dict, stop_count: int) -> FlightOffer:
+    flights = best["flights"]
+    first_flight = flights[0]
+    departure_date = first_flight["departure_airport"]["time"][:10]
+    airline = first_flight.get("airline", "Unknown")
+    outbound = _serpapi_leg_dict(flights, best.get("total_duration"))
     return FlightOffer(
         price=float(best["price"]),
         currency="USD",
@@ -427,7 +434,26 @@ def _serpapi_build_offer(best: dict, stop_count: int) -> FlightOffer:
         stops=stop_count,
         airline=airline,
         details=_format_leg("Outbound", outbound),
+        departure_token=best.get("departure_token", ""),
     )
+
+
+def _serpapi_fetch_inbound(base_params: dict, departure_token: str, cache_hours: float) -> dict | None:
+    """Second-step SerpAPI call: resolve the return flights for a chosen outbound.
+
+    Google Flights' round-trip search is two calls — the first returns outbound
+    options with a ``departure_token`` each; passing that token back (same
+    origin/destination/dates) returns the matching return flights and the
+    final total price for that specific combination.
+    """
+    params = dict(base_params)
+    params["departure_token"] = departure_token
+    data = _search(params, cache_hours=cache_hours)
+    candidates = data.get("best_flights", []) + data.get("other_flights", [])
+    valid = [o for o in candidates if "price" in o and o.get("flights")]
+    if not valid:
+        return None
+    return min(valid, key=lambda o: o["price"])
 
 
 def _cheapest_offers_by_stops(data: dict) -> dict:
@@ -450,9 +476,16 @@ def _cheapest_offers_by_stops(data: dict) -> dict:
 # ── Round-trip search ─────────────────────────────────────────────────────────
 
 def search_round_trip_serpapi(route: dict, config: dict, stops_filter: int = 2) -> dict:
-    """Return {0: nonstop_offer, 1: one_stop_offer} — cheapest across all date combos."""
+    """Return {0: nonstop_offer, 1: one_stop_offer} — cheapest across all date combos.
+
+    ``route["airline_filter"]`` (IATA code, e.g. "HU") restricts results to a
+    single carrier — used for Hainan's BOS-PEK service, whose winter Brussels
+    technical stop shows up as a single 0-layover segment in Google Flights, not
+    as a connection.
+    """
     dates, date_end = _route_dates(route, config)
     best: dict = {0: None, 1: None}
+    airline_filter = route.get("airline_filter")
 
     for destination, destination_name in _destination_options(route):
         for dep_date in dates:
@@ -461,19 +494,38 @@ def search_round_trip_serpapi(route: dict, config: dict, stops_filter: int = 2) 
                 if ret_date > date_end:
                     continue
                 try:
-                    data = _search({
+                    params = {
                         "type": "1",
                         "departure_id": route["origin"],
                         "arrival_id": destination,
                         "outbound_date": str(dep_date),
                         "return_date": str(ret_date),
                         "stops": "2",  # fetch all; filter client-side
-                    }, cache_hours=float(config.get("cache_hours", 6)))
+                    }
+                    if airline_filter:
+                        params["include_airlines"] = airline_filter
+                    cache_hours = float(config.get("cache_hours", 6))
+                    data = _search(params, cache_hours=cache_hours)
                     offers = _cheapest_offers_by_stops(data)
                     for stop_count, offer in offers.items():
                         if offer:
                             offer.final_leg_date = str(ret_date)
                             _annotate_destination(offer, destination_name)
+                            if offer.departure_token:
+                                inbound_best = _serpapi_fetch_inbound(
+                                    params, offer.departure_token, cache_hours
+                                )
+                                if inbound_best:
+                                    inbound_leg = _serpapi_leg_dict(
+                                        inbound_best["flights"], inbound_best.get("total_duration")
+                                    )
+                                    offer.details = "\n".join(
+                                        part for part in
+                                        [offer.details, _format_leg("Inbound", inbound_leg)]
+                                        if part
+                                    )
+                                    offer.price = float(inbound_best["price"])
+                                offer.departure_token = ""
                             if best[stop_count] is None or offer.price < best[stop_count].price:
                                 best[stop_count] = offer
                 except Exception as e:
