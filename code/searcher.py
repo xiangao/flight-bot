@@ -479,9 +479,11 @@ def search_round_trip_serpapi(route: dict, config: dict, stops_filter: int = 2) 
     """Return {0: nonstop_offer, 1: one_stop_offer} — cheapest across all date combos.
 
     ``route["airline_filter"]`` (IATA code, e.g. "HU") restricts results to a
-    single carrier — used for Hainan's BOS-PEK service, whose winter Brussels
-    technical stop shows up as a single 0-layover segment in Google Flights, not
-    as a connection.
+    single carrier. Not currently used by any active route — was added for
+    Hainan's BOS-PEK service (config/routes.yaml, retired 2026-07-22: Ignav
+    turned out to cover that fare too, on the same provider as the general
+    BOS-China route) — kept as a generic capability for any future
+    single-carrier-preference route.
     """
     dates, date_end = _route_dates(route, config)
     best: dict = {0: None, 1: None}

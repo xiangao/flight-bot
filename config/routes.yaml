@@ -31,30 +31,23 @@ routes:
         name: Shanghai
       - code: HKG
         name: Hong Kong
+    date_start: "2026-09-01"   # widened from global Oct-1 start (was Sep-only on the
+                                # now-retired Hainan Direct route) so this route alone
+                                # still catches cheap September dates for any carrier
+    sample_dates: 8             # widened from global default of 4, to match the density
+                                # the retired route used to check
     stay_min: 21
     stay_max: 30
     stay_step: 3
     max_stops: 1   # show both nonstop and 1-stop live panels
-
-  - name: "Hainan Direct BOS-PEK"
-    csv_name: "Hainan Direct"
-    type: round_trip
-    provider: serpapi     # Ignav carries no Hainan fares at all for this route
-    origin: BOS
-    destination: PEK
-    destination_name: Beijing
-    airline_filter: HU     # Hainan only. Its winter routing has a Brussels
-                            # technical stop, but Google Flights shows it as a
-                            # single 0-layover segment (same flight number,
-                            # HU730/729) — not a connection — so this route is
-                            # tracked as nonstop-only.
-    date_start: "2026-09-01"   # after the confirmed pure-nonstop summer window (through 2026-08-30)
-    date_end: "2026-11-30"
-    weekdays: [Wed, Fri, Sun]  # HU730/729's actual operating days
-    sample_dates: 8
-    stay_min: 21
-    stay_max: 21    # fixed 3-week trip, matching the other BOS-China route's convention
-    max_stops: 0    # dashboard: nonstop panel only
+    # A dedicated "Hainan Direct BOS-PEK" SerpAPI route lived here until
+    # 2026-07-22, added on the belief that "Ignav carries no Hainan fares at
+    # all for this route." That was verified WRONG by querying Ignav's API
+    # directly: it returned Hainan flight HU730/729 (Boeing 787, BOS-PEK) as a
+    # single correctly-nonstop segment, at prices matching SerpAPI exactly
+    # ($1,106 for Oct21->Nov11, $944 for Sep30->Oct21). Retired as redundant —
+    # this route already covers Hainan via Ignav (free) with no loss of
+    # correctness. See git history for the removed route if ever needed again.
 
 search:
   provider: ignav
