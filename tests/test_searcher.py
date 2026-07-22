@@ -3,12 +3,29 @@ from datetime import date
 from unittest.mock import MagicMock, patch
 from code.searcher import (
     _sample_dates,
-    _cheapest_offer,
+    _cheapest_offers_by_stops,
     _ignav_cheapest_offer,
     search_round_trip,
     search_multi_city,
     FlightOffer,
 )
+
+
+def _min_offer(best: dict | None) -> FlightOffer | None:
+    """Collapse a ``{stop_count: offer}`` dict to the single cheapest offer.
+
+    The searcher refactor changed price extraction and the ``search_*``
+    functions to return per-stop-count dicts (``{0: offer, 1: offer}``); these
+    tests predate that and assert on one overall-cheapest offer, so reduce the
+    dict to its minimum-price entry here.
+    """
+    offers = [o for o in (best or {}).values() if o]
+    return min(offers, key=lambda o: o.price) if offers else None
+
+
+def _cheapest_offer(data: dict) -> FlightOffer | None:
+    """Test adapter: single cheapest offer from a raw API response."""
+    return _min_offer(_cheapest_offers_by_stops(data))
 
 
 def _serpapi_response(price: int, dep_at: str = "2026-09-15 10:00", carrier: str = "JAL") -> dict:
@@ -173,7 +190,7 @@ def test_search_round_trip_returns_cheapest(monkeypatch):
 
     route = {"origin": "BOS", "destination": "HKG", "stay_min": 18, "stay_max": 25, "max_stops": 1}
     config = {"date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 2}
-    result = search_round_trip(route, config)
+    result = _min_offer(search_round_trip(route, config))
     assert result is not None
     assert result.price == 1100.0
 
@@ -184,7 +201,7 @@ def test_search_round_trip_skips_errors(monkeypatch):
 
     route = {"origin": "BOS", "destination": "HKG", "stay_min": 18, "stay_max": 25, "max_stops": 1}
     config = {"date_start": "2026-09-01", "date_end": "2026-09-05", "sample_dates": 2}
-    result = search_round_trip(route, config)
+    result = _min_offer(search_round_trip(route, config))
     assert result is None
 
 
@@ -204,7 +221,7 @@ def test_search_multi_city_returns_cheapest(monkeypatch):
         "max_stops": 1,
     }
     config = {"date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 2}
-    result = search_multi_city(route, config)
+    result = _min_offer(search_multi_city(route, config))
     assert result is not None
     assert result.price == 1700.0
 
@@ -225,7 +242,7 @@ def test_search_multi_city_sets_final_leg_date(monkeypatch):
         "max_stops": 1,
     }
     config = {"date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 2}
-    result = search_multi_city(route, config)
+    result = _min_offer(search_multi_city(route, config))
     # dep_date=2026-09-01, stay1=7 → mid=2026-09-08, stay2=14 → ret=2026-09-22
     assert result.final_leg_date == "2026-09-22"
 
@@ -252,7 +269,7 @@ def test_search_round_trip_ignav_posts_round_trip_payload(monkeypatch):
 
     route = {"origin": "BOS", "destination": "HKG", "stay_min": 18, "stay_max": 18, "max_stops": 1}
     config = {"provider": "ignav", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 1}
-    result = search_round_trip(route, config, stops_filter=1)
+    result = _min_offer(search_round_trip(route, config, stops_filter=1))
     assert result is not None
     assert result.price == 1100.0
 
@@ -280,7 +297,7 @@ def test_search_round_trip_ignav_selects_cheapest_destination(monkeypatch):
         "max_stops": 1,
     }
     config = {"provider": "ignav", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 1}
-    result = search_round_trip(route, config, stops_filter=1)
+    result = _min_offer(search_round_trip(route, config, stops_filter=1))
     assert result is not None
     assert result.price == 1000.0
     assert result.final_leg_date == "2026-09-22"
@@ -305,7 +322,7 @@ def test_search_round_trip_ignav_uses_flexible_stay_step(monkeypatch):
         "max_stops": 1,
     }
     config = {"provider": "ignav", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 1}
-    result = search_round_trip(route, config, stops_filter=1)
+    result = _min_offer(search_round_trip(route, config, stops_filter=1))
     assert result is not None
     assert seen_return_dates == ["2026-09-19", "2026-09-21", "2026-09-23"]
 
@@ -327,7 +344,7 @@ def test_search_multi_city_ignav_sums_one_way_legs(monkeypatch):
         "max_stops": 1,
     }
     config = {"provider": "ignav", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 1}
-    result = search_multi_city(route, config, stops_filter=1)
+    result = _min_offer(search_multi_city(route, config, stops_filter=1))
     assert result is not None
     assert result.price == 1800.0
     assert result.final_leg_date == "2026-09-22"
