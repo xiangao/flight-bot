@@ -19,27 +19,37 @@ routes:
         destination: BOS
     max_stops: 0   # each leg nonstop: BOS→NRT, KIX→HKG, HKG→BOS
 
-  - name: "BOS ↔ Beijing / Shanghai / HK"
-    csv_name: "Boston-China 3-week"   # matches historical CSV data
+  - name: "BOS ↔ Beijing (PEK)"
+    csv_name: "Boston-China 3-week"   # matches historical CSV data (unchanged so
+                                       # price history from the wider-destination
+                                       # era stays attached to this same route)
     type: round_trip
     provider: ignav
     origin: BOS
-    destinations:
-      - code: PEK
-        name: Beijing
-      - code: PVG
-        name: Shanghai
-      - code: HKG
-        name: Hong Kong
-    date_start: "2026-09-01"   # widened from global Oct-1 start (was Sep-only on the
-                                # now-retired Hainan Direct route) so this route alone
-                                # still catches cheap September dates for any carrier
-    sample_dates: 8             # widened from global default of 4, to match the density
-                                # the retired route used to check
+    destination: PEK
+    destination_name: Beijing
+    date_start: "2026-09-01"
+    date_end: "2026-11-21"      # Oct 31 (last outbound day) + 21-day stay, so late-
+                                 # October departures' returns aren't cut off
+    weekdays: [Mon, Tue, Wed, Thu, Fri, Sat, Sun]   # all 7 days -- not a real
+        # restriction; this is the mechanism _route_dates() uses to sample
+        # outbound dates only through date_start..(date_end - max stay) while
+        # still letting date_end extend further for valid returns. Without it,
+        # outbound sampling and the return-date cutoff share one field and
+        # can't be set independently (verified against code/searcher.py's
+        # _route_dates before relying on this).
+    sample_dates: 61            # >= (Oct 31 - Sep 1).days + 1 -> every single day
+                                 # in Sep+Oct sampled, no gaps
     stay_min: 21
-    stay_max: 30
-    stay_step: 3
+    stay_max: 21                # fixed 3-week stay only
     max_stops: 1   # show both nonstop and 1-stop live panels
+    # Narrowed to PEK-only (dropped PVG/Shanghai, HKG/Hong Kong) and to daily
+    # Sep-Oct sampling on 2026-07-22: a coarser 8-date sample across 3
+    # destinations missed a real $944 Hainan BOS-PEK fare on 2026-09-30 (found
+    # by manually querying Ignav) because that exact date wasn't one of the 8
+    # sampled -- the nearest sampled date (Sep 27) priced Hainan at $1,133
+    # instead. Daily PEK-only sampling closes that gap directly.
+    #
     # A dedicated "Hainan Direct BOS-PEK" SerpAPI route lived here until
     # 2026-07-22, added on the belief that "Ignav carries no Hainan fares at
     # all for this route." That was verified WRONG by querying Ignav's API
