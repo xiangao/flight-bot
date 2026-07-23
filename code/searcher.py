@@ -531,15 +531,22 @@ def _scrape_build_offer(option: dict, legs: list) -> FlightOffer:
     )
 
 
-def search_round_trip_scrape(route: dict, config: dict) -> dict:
-    """Return {0: nonstop_offer, 1: one_stop_offer} for a round trip, scraped
-    directly off Google Flights — no API, no quota."""
+def search_round_trip_scrape(route: dict, config: dict) -> tuple[dict, list[dict]]:
+    """Return (best, all_results) for a round trip, scraped directly off
+    Google Flights — no API, no quota.
+
+    best: {0: nonstop_offer, 1: one_stop_offer} -- unchanged, feeds the
+    existing alert/notifier flow. all_results: one entry per (date-combo,
+    stop-count) that returned a fare -- {"dates": [dep_date_str, ret_date_str],
+    "stops": 0|1, "offer": FlightOffer} -- feeds the new per-date-pair CSV.
+    """
     from code.browser import launch_browser
 
     dates, date_end = _route_dates(route, config)
     seat = _GFLIGHTS_SEAT.get(str(config.get("cabin_class", "economy")).lower(), 1)
     adults = int(config.get("adults", 1))
     best: dict = {0: None, 1: None}
+    all_results: list = []
 
     pw, browser, page = launch_browser()
     try:
@@ -561,18 +568,30 @@ def search_round_trip_scrape(route: dict, config: dict) -> dict:
                                 continue
                             offer = _scrape_build_offer(option, legs)
                             _annotate_destination(offer, destination_name)
+                            all_results.append({
+                                "dates": [str(dep_date), str(ret_date)],
+                                "stops": stop_count,
+                                "offer": offer,
+                            })
                             if best[stop_count] is None or offer.price < best[stop_count].price:
                                 best[stop_count] = offer
                     except Exception as e:
                         print(f"WARNING [scrape {route['origin']}-{destination} {dep_date}]: {e}")
     finally:
         browser.close(); pw.stop()
-    return best
+    return best, all_results
 
 
-def search_multi_city_scrape(route: dict, config: dict) -> dict:
-    """Return {0: nonstop_offer, 1: one_stop_offer} for a multi-city trip,
-    scraped directly off Google Flights — no API, no quota."""
+def search_multi_city_scrape(route: dict, config: dict) -> tuple[dict, list[dict]]:
+    """Return (best, all_results) for a multi-city trip, scraped directly off
+    Google Flights — no API, no quota.
+
+    best: {0: nonstop_offer, 1: one_stop_offer} -- unchanged, feeds the
+    existing alert/notifier flow. all_results: one entry per (date-combo,
+    stop-count) that returned a fare -- {"dates": [dep_date_str, mid_date_str,
+    ret_date_str], "stops": 0|1, "offer": FlightOffer} -- feeds the new
+    per-date-pair CSV.
+    """
     from code.browser import launch_browser
 
     dates, date_end = _route_dates(route, config)
@@ -580,6 +599,7 @@ def search_multi_city_scrape(route: dict, config: dict) -> dict:
     seat = _GFLIGHTS_SEAT.get(str(config.get("cabin_class", "economy")).lower(), 1)
     adults = int(config.get("adults", 1))
     best: dict = {0: None, 1: None}
+    all_results: list = []
 
     pw, browser, page = launch_browser()
     try:
@@ -602,13 +622,18 @@ def search_multi_city_scrape(route: dict, config: dict) -> dict:
                             if option is None:
                                 continue
                             offer = _scrape_build_offer(option, legs)
+                            all_results.append({
+                                "dates": [str(dep_date), str(mid_date), str(ret_date)],
+                                "stops": stop_count,
+                                "offer": offer,
+                            })
                             if best[stop_count] is None or offer.price < best[stop_count].price:
                                 best[stop_count] = offer
                     except Exception as e:
                         print(f"WARNING [scrape multi-city {dep_date}/{stay1}/{stay2}]: {e}")
     finally:
         browser.close(); pw.stop()
-    return best
+    return best, all_results
 
 
 # ── Round-trip search ─────────────────────────────────────────────────────────
@@ -670,7 +695,7 @@ def search_round_trip_serpapi(route: dict, config: dict, stops_filter: int = 2) 
                                 best[stop_count] = offer
                 except Exception as e:
                     print(f"WARNING [{route['origin']}-{destination} {dep_date}]: {e}")
-    return best
+    return best, []
 
 
 def search_round_trip_ignav(route: dict, config: dict, max_stops: int | None = 1) -> dict:
@@ -703,7 +728,7 @@ def search_round_trip_ignav(route: dict, config: dict, max_stops: int | None = 1
                                 best[stop_count] = offer
                 except Exception as e:
                     print(f"WARNING [Ignav {route['origin']}-{destination} {dep_date}]: {e}")
-    return best
+    return best, []
 
 
 def search_round_trip(route: dict, config: dict, stops_filter: int = 2) -> dict:
@@ -778,7 +803,7 @@ def search_multi_city_serpapi(route: dict, config: dict, stops_filter: int = 2) 
                                 best[stop_count] = offer
                 except Exception as e:
                     print(f"WARNING [multi-city {dep_date}/{stay1}/{stay2}]: {e}")
-    return best
+    return best, []
 
 
 def search_multi_city_ignav(route: dict, config: dict, max_stops: int | None = 1) -> dict:
@@ -822,7 +847,7 @@ def search_multi_city_ignav(route: dict, config: dict, max_stops: int | None = 1
                             best[target_stops] = offer
                 except Exception as e:
                     print(f"WARNING [Ignav multi-city {dep_date}/{stay1}/{stay2}]: {e}")
-    return best
+    return best, []
 
 
 def search_multi_city(route: dict, config: dict, stops_filter: int = 2) -> dict:

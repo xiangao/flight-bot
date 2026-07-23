@@ -195,7 +195,7 @@ def test_search_round_trip_returns_cheapest(monkeypatch):
     # this explicit key, a route config that omits provider would silently miss
     # the SerpAPI path this test means to exercise.
     config = {"provider": "serpapi", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 2}
-    result = _min_offer(search_round_trip(route, config))
+    result = _min_offer(search_round_trip(route, config)[0])
     assert result is not None
     assert result.price == 1100.0
 
@@ -206,7 +206,7 @@ def test_search_round_trip_skips_errors(monkeypatch):
 
     route = {"origin": "BOS", "destination": "HKG", "stay_min": 18, "stay_max": 25, "max_stops": 1}
     config = {"provider": "serpapi", "date_start": "2026-09-01", "date_end": "2026-09-05", "sample_dates": 2}
-    result = _min_offer(search_round_trip(route, config))
+    result = _min_offer(search_round_trip(route, config)[0])
     assert result is None
 
 
@@ -226,7 +226,7 @@ def test_search_multi_city_returns_cheapest(monkeypatch):
         "max_stops": 1,
     }
     config = {"provider": "serpapi", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 2}
-    result = _min_offer(search_multi_city(route, config))
+    result = _min_offer(search_multi_city(route, config)[0])
     assert result is not None
     assert result.price == 1700.0
 
@@ -247,7 +247,7 @@ def test_search_multi_city_sets_final_leg_date(monkeypatch):
         "max_stops": 1,
     }
     config = {"provider": "serpapi", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 2}
-    result = _min_offer(search_multi_city(route, config))
+    result = _min_offer(search_multi_city(route, config)[0])
     # dep_date=2026-09-01, stay1=7 → mid=2026-09-08, stay2=14 → ret=2026-09-22
     assert result.final_leg_date == "2026-09-22"
 
@@ -274,7 +274,7 @@ def test_search_round_trip_ignav_posts_round_trip_payload(monkeypatch):
 
     route = {"origin": "BOS", "destination": "HKG", "stay_min": 18, "stay_max": 18, "max_stops": 1}
     config = {"provider": "ignav", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 1}
-    result = _min_offer(search_round_trip(route, config, stops_filter=1))
+    result = _min_offer(search_round_trip(route, config, stops_filter=1)[0])
     assert result is not None
     assert result.price == 1100.0
 
@@ -302,7 +302,7 @@ def test_search_round_trip_ignav_selects_cheapest_destination(monkeypatch):
         "max_stops": 1,
     }
     config = {"provider": "ignav", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 1}
-    result = _min_offer(search_round_trip(route, config, stops_filter=1))
+    result = _min_offer(search_round_trip(route, config, stops_filter=1)[0])
     assert result is not None
     assert result.price == 1000.0
     assert result.final_leg_date == "2026-09-22"
@@ -327,7 +327,7 @@ def test_search_round_trip_ignav_uses_flexible_stay_step(monkeypatch):
         "max_stops": 1,
     }
     config = {"provider": "ignav", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 1}
-    result = _min_offer(search_round_trip(route, config, stops_filter=1))
+    result = _min_offer(search_round_trip(route, config, stops_filter=1)[0])
     assert result is not None
     assert seen_return_dates == ["2026-09-19", "2026-09-21", "2026-09-23"]
 
@@ -349,7 +349,7 @@ def test_search_multi_city_ignav_sums_one_way_legs(monkeypatch):
         "max_stops": 1,
     }
     config = {"provider": "ignav", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 1}
-    result = _min_offer(search_multi_city(route, config, stops_filter=1))
+    result = _min_offer(search_multi_city(route, config, stops_filter=1)[0])
     assert result is not None
     assert result.price == 1800.0
     assert result.final_leg_date == "2026-09-22"
@@ -379,7 +379,7 @@ def test_search_round_trip_scrape_returns_nonstop_and_onestop(monkeypatch):
 
     route = {"origin": "BOS", "destination": "PEK", "stay_min": 21, "stay_max": 21}
     config = {"date_start": "2026-10-06", "date_end": "2026-12-01", "sample_dates": 1, "provider": "scrape"}
-    result = search_round_trip(route, config)
+    result, pairs = search_round_trip(route, config)
 
     assert result[0].price == 944.0
     # search_round_trip_scrape calls _annotate_destination like the SerpAPI/Ignav
@@ -391,6 +391,36 @@ def test_search_round_trip_scrape_returns_nonstop_and_onestop(monkeypatch):
     assert result[1].price == 780.0
     assert result[1].airline == "United to PEK"
     assert "Hainan" in result[0].details
+    assert pairs  # non-empty: at least this one date combo was captured
+    assert all(set(p.keys()) == {"dates", "stops", "offer"} for p in pairs)
+    assert all(len(p["dates"]) == 2 for p in pairs)
+
+
+def test_search_round_trip_scrape_captures_every_sampled_combo(monkeypatch):
+    """sample_dates=1 with a fixed 21-day stay means exactly one date combo is
+    searched -- pairs must have exactly one entry per stop count found."""
+    monkeypatch.setattr("code.browser.launch_browser", lambda: (MagicMock(), MagicMock(), MagicMock()))
+
+    def fake_search_all_options(page, legs, seat, adults):
+        return [
+            {"price": 944.0, "currency": "USD", "airline": "Hainan", "stops": "Nonstop",
+             "dep_airport": "BOS", "dep_time": "11:55 PM", "dep_date": "Wed, Sep 30",
+             "arr_airport": "PEK", "arr_time": "4:30 AM", "arr_date": "Fri, Oct 2",
+             "duration_min": 995, "layover_min": None, "layover_airport": None},
+        ]
+    monkeypatch.setattr("code.searcher.scrape_search_all_options", fake_search_all_options)
+
+    route = {"origin": "BOS", "destination": "PEK", "stay_min": 21, "stay_max": 21}
+    # date_end must be >= the computed return date (2026-10-06 + 21 days =
+    # 2026-10-27) or the one combo gets filtered by `ret_date > date_end` --
+    # see config/routes.yaml's date_end convention (last outbound day + max stay).
+    config = {"date_start": "2026-10-06", "date_end": "2026-10-27", "sample_dates": 1, "provider": "scrape"}
+    result, pairs = search_round_trip(route, config)
+
+    assert len(pairs) == 1
+    assert pairs[0]["stops"] == 0
+    assert pairs[0]["dates"] == ["2026-10-06", "2026-10-27"]
+    assert pairs[0]["offer"].price == 944.0
 
 
 def test_search_round_trip_scrape_excludes_turkish_airlines(monkeypatch):
@@ -421,7 +451,7 @@ def test_search_round_trip_scrape_excludes_turkish_airlines(monkeypatch):
 
     route = {"origin": "BOS", "destination": "PEK", "stay_min": 21, "stay_max": 21}
     config = {"date_start": "2026-10-06", "date_end": "2026-12-01", "sample_dates": 1, "provider": "scrape"}
-    result = search_round_trip(route, config)
+    result, pairs = search_round_trip(route, config)
 
     # The acceptable United fare wins the 1-stop slot, not the cheaper Turkish
     # Airlines one.
@@ -454,9 +484,40 @@ def test_search_multi_city_scrape_returns_nonstop_and_onestop(monkeypatch):
         ],
     }
     config = {"date_start": "2026-10-06", "date_end": "2026-12-29", "sample_dates": 1, "provider": "scrape"}
-    result = search_multi_city(route, config)
+    result, pairs = search_multi_city(route, config)
 
     assert result[0].price == 2071.0
     assert result[0].airline == "JAL"
     assert result[1].price == 1259.0
     assert result[1].airline == "Air Canada"
+    assert pairs
+    assert all(len(p["dates"]) == 3 for p in pairs)
+
+
+def test_search_multi_city_scrape_captures_every_sampled_combo(monkeypatch):
+    """sample_dates=1 with fixed stay_min==stay_max on both segments means
+    exactly one date combo is searched."""
+    monkeypatch.setattr("code.browser.launch_browser", lambda: (MagicMock(), MagicMock(), MagicMock()))
+
+    def fake_search_all_options(page, legs, seat, adults):
+        return [
+            {"price": 2071.0, "currency": "USD", "airline": "JAL", "stops": "Nonstop",
+             "dep_airport": "BOS", "dep_time": "1:00 PM", "dep_date": "Tue, Oct 13",
+             "arr_airport": "NRT", "arr_time": "4:00 PM", "arr_date": "Wed, Oct 14",
+             "duration_min": 840, "layover_min": None, "layover_airport": None},
+        ]
+    monkeypatch.setattr("code.searcher.scrape_search_all_options", fake_search_all_options)
+
+    route = {
+        "segments": [
+            {"origin": "BOS", "destination": "NRT", "stay_min": 8, "stay_max": 8},
+            {"origin": "KIX", "destination": "SHA", "stay_min": 14, "stay_max": 14},
+            {"origin": "HKG", "destination": "BOS"},
+        ],
+    }
+    config = {"date_start": "2026-10-13", "date_end": "2026-11-04", "sample_dates": 1, "provider": "scrape"}
+    result, pairs = search_multi_city(route, config)
+
+    assert len(pairs) == 1
+    assert pairs[0]["stops"] == 0
+    assert pairs[0]["dates"] == ["2026-10-13", "2026-10-21", "2026-11-04"]
