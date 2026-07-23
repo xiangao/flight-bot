@@ -8,8 +8,8 @@ Daily flight price monitor that tracks two routes, publishes a live HTML dashboa
 
 | Route | Provider | Type | Notes |
 |-------|----------|------|-------|
-| Asia Grand Tour | SerpAPI | Multi-city | BOS→NRT, then NRT→KIX overland, KIX→HKG, HKG→BOS. True multi-city fare — SerpAPI/Google Flights required. |
-| BOS ↔ Beijing / Shanghai / HK | Ignav | Round-trip | Searches all 3 destinations, picks cheapest. Nonstop only. |
+| Asia Grand Tour | scrape | Multi-city | BOS→NRT, then NRT→KIX overland, KIX→SHA, HKG→BOS. Scrape (Google Flights); SerpAPI fallback. |
+| BOS ↔ Beijing (PEK) | scrape | Round-trip | 21-day stays, nonstop + 1-stop fares. Scrape (Google Flights); Ignav fallback. |
 
 Both routes are configured in `config/routes.yaml`.
 

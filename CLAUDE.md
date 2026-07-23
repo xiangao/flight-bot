@@ -58,8 +58,9 @@ Logs: `journalctl --user -u flight-bot.service`
 
 Configured in `config/routes.yaml`. Date window and alert threshold are in the `search:` section.
 
-- Use `provider: ignav` for round-trips — supports nonstop + 1-stop in one API call
-- Use `provider: serpapi` for multi-city — required for true multi-city fares; summing one-ways via Ignav gives unrealistic prices
+- Default `provider: scrape` (Google Flights) — free, no quota, no API key needed
+- `provider: ignav` available as explicit fallback for round-trips — supports nonstop + 1-stop in one API call
+- `provider: serpapi` available as explicit fallback for multi-city — required for true multi-city fares; summing one-ways via Ignav gives unrealistic prices
 - `max_stops` / `min_stops` on a route controls which stop-count panels are shown in the dashboard
 - **Ignav does carry Hainan fares** (verified 2026-07-22 by querying its API directly for
   BOS-PEK: returned Hainan flight HU730/729 as one correctly-nonstop segment, priced
