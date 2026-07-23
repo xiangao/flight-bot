@@ -402,8 +402,8 @@ def write_html(
 <h1>Flight Prices</h1>
 <p class="meta">Updated {now}</p>
 {body}
-<p class="disclaimer">Tracked prices come from the fare API for each route (Ignav or Google
-Flights via SerpAPI). The <b>Search&nbsp;↗</b> link opens an <i>independent</i> Google Flights
+<p class="disclaimer">Tracked prices come from Google Flights (scraped directly, or via a fare
+API for routes explicitly configured to use one). The <b>Search&nbsp;↗</b> link opens an <i>independent</i> Google Flights
 search for the same route and dates — it is a different seller, so its price can differ (in
 either direction) from the tracked fare above. Treat it as a live sanity-check, not the exact
 fare, and confirm the price on the airline's own site before booking.</p>

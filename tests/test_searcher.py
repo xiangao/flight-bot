@@ -361,7 +361,7 @@ def test_provider_defaults_to_serpapi_when_unset(monkeypatch):
 
 
 def test_search_round_trip_scrape_returns_nonstop_and_onestop(monkeypatch):
-    monkeypatch.setattr("code.searcher.launch_browser", lambda: (MagicMock(), MagicMock(), MagicMock()))
+    monkeypatch.setattr("code.browser.launch_browser", lambda: (MagicMock(), MagicMock(), MagicMock()))
 
     def fake_search_all_options(page, legs, seat, adults):
         return [
@@ -392,8 +392,45 @@ def test_search_round_trip_scrape_returns_nonstop_and_onestop(monkeypatch):
     assert "Hainan" in result[0].details
 
 
+def test_search_round_trip_scrape_excludes_turkish_airlines(monkeypatch):
+    """Regression test for the Turkish Airlines exclusion policy bypass: the
+    scrape provider must apply EXCLUDED_AIRLINES like the SerpAPI/Ignav paths
+    already do. A live-verification run of this branch (pre-fix) actually
+    wrote a Turkish Airlines fare into data/round_trip_prices.csv as the
+    tracked "1 stop" fare for the Beijing route."""
+    monkeypatch.setattr("code.browser.launch_browser", lambda: (MagicMock(), MagicMock(), MagicMock()))
+
+    def fake_search_all_options(page, legs, seat, adults):
+        return [
+            {"price": 944.0, "currency": "USD", "airline": "Hainan", "stops": "Nonstop",
+             "dep_airport": "BOS", "dep_time": "11:55 PM", "dep_date": "Wed, Sep 30",
+             "arr_airport": "PEK", "arr_time": "4:30 AM", "arr_date": "Fri, Oct 2",
+             "duration_min": 995, "layover_min": None, "layover_airport": None},
+            # Cheapest 1-stop option, but on the excluded carrier — must NOT win.
+            {"price": 500.0, "currency": "USD", "airline": "Turkish Airlines", "stops": "1 stop",
+             "dep_airport": "BOS", "dep_time": "6:00 PM", "dep_date": "Wed, Sep 30",
+             "arr_airport": "PEK", "arr_time": "11:00 PM", "arr_date": "Fri, Oct 2",
+             "duration_min": 1800, "layover_min": 300, "layover_airport": "IST"},
+            {"price": 780.0, "currency": "USD", "airline": "United", "stops": "1 stop",
+             "dep_airport": "BOS", "dep_time": "12:15 PM", "dep_date": "Wed, Sep 30",
+             "arr_airport": "PEK", "arr_time": "4:40 AM", "arr_date": "Fri, Oct 2",
+             "duration_min": 1705, "layover_min": 125, "layover_airport": "LAX"},
+        ]
+    monkeypatch.setattr("code.searcher.scrape_search_all_options", fake_search_all_options)
+
+    route = {"origin": "BOS", "destination": "PEK", "stay_min": 21, "stay_max": 21}
+    config = {"date_start": "2026-10-06", "date_end": "2026-12-01", "sample_dates": 1, "provider": "scrape"}
+    result = search_round_trip(route, config)
+
+    # The acceptable United fare wins the 1-stop slot, not the cheaper Turkish
+    # Airlines one.
+    assert result[1].price == 780.0
+    assert result[1].airline == "United to PEK"
+    assert "Turkish Airlines" not in (result[1].details or "")
+
+
 def test_search_multi_city_scrape_returns_nonstop_and_onestop(monkeypatch):
-    monkeypatch.setattr("code.searcher.launch_browser", lambda: (MagicMock(), MagicMock(), MagicMock()))
+    monkeypatch.setattr("code.browser.launch_browser", lambda: (MagicMock(), MagicMock(), MagicMock()))
 
     def fake_search_all_options(page, legs, seat, adults):
         return [

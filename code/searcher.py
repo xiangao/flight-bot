@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from code.browser import launch_browser
 from code.gflights import SEAT as _GFLIGHTS_SEAT
 from code.gflights_searcher import search_all_options as scrape_search_all_options
 
@@ -485,6 +484,7 @@ def _scrape_offers_by_stops(options: list) -> dict:
     Matches the exact-stop-count binning `_cheapest_offers_by_stops`/
     `_ignav_offers_by_stops` already use — 2+-stop options are dropped, same
     as those providers do client-side."""
+    options = [o for o in options if o["airline"] not in EXCLUDED_AIRLINES]
     result: dict = {0: None, 1: None}
     for stop_count, label in ((0, "Nonstop"), (1, "1 stop")):
         candidates = [o for o in options if o["stops"] == label]
@@ -528,6 +528,8 @@ def _scrape_build_offer(option: dict, departure_date: str, final_leg_date: str) 
 def search_round_trip_scrape(route: dict, config: dict) -> dict:
     """Return {0: nonstop_offer, 1: one_stop_offer} for a round trip, scraped
     directly off Google Flights — no API, no quota."""
+    from code.browser import launch_browser
+
     dates, date_end = _route_dates(route, config)
     seat = _GFLIGHTS_SEAT.get(str(config.get("cabin_class", "economy")).lower(), 1)
     adults = int(config.get("adults", 1))
@@ -565,6 +567,8 @@ def search_round_trip_scrape(route: dict, config: dict) -> dict:
 def search_multi_city_scrape(route: dict, config: dict) -> dict:
     """Return {0: nonstop_offer, 1: one_stop_offer} for a multi-city trip,
     scraped directly off Google Flights — no API, no quota."""
+    from code.browser import launch_browser
+
     dates, date_end = _route_dates(route, config)
     segs = route["segments"]
     seat = _GFLIGHTS_SEAT.get(str(config.get("cabin_class", "economy")).lower(), 1)
