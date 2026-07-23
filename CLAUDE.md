@@ -1,6 +1,6 @@
 # flight-bot
 
-Daily flight price tracker. Ignav for round-trips, SerpAPI for multi-city.
+Daily flight price tracker over Google Flights (scraped directly, free), with Ignav/SerpAPI available as explicit fallback providers.
 
 ## Architecture update (2026-07-23 — scrape is now the default provider)
 
