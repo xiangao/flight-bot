@@ -189,7 +189,11 @@ def test_search_round_trip_returns_cheapest(monkeypatch):
     monkeypatch.setattr("code.searcher._api_key", lambda: "testkey")
 
     route = {"origin": "BOS", "destination": "HKG", "stay_min": 18, "stay_max": 25, "max_stops": 1}
-    config = {"date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 2}
+    # Explicit provider: this test predates the "scrape" default (searcher.py's
+    # _provider() now defaults to "scrape" when unset) and asserts on the
+    # requests.get-mocked SerpAPI path specifically — without this, it would
+    # silently fall through to a live, unmocked browser scrape.
+    config = {"provider": "serpapi", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 2}
     result = _min_offer(search_round_trip(route, config))
     assert result is not None
     assert result.price == 1100.0
@@ -200,7 +204,7 @@ def test_search_round_trip_skips_errors(monkeypatch):
     monkeypatch.setattr("code.searcher._api_key", lambda: "testkey")
 
     route = {"origin": "BOS", "destination": "HKG", "stay_min": 18, "stay_max": 25, "max_stops": 1}
-    config = {"date_start": "2026-09-01", "date_end": "2026-09-05", "sample_dates": 2}
+    config = {"provider": "serpapi", "date_start": "2026-09-01", "date_end": "2026-09-05", "sample_dates": 2}
     result = _min_offer(search_round_trip(route, config))
     assert result is None
 
@@ -220,7 +224,7 @@ def test_search_multi_city_returns_cheapest(monkeypatch):
         ],
         "max_stops": 1,
     }
-    config = {"date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 2}
+    config = {"provider": "serpapi", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 2}
     result = _min_offer(search_multi_city(route, config))
     assert result is not None
     assert result.price == 1700.0
@@ -241,7 +245,7 @@ def test_search_multi_city_sets_final_leg_date(monkeypatch):
         ],
         "max_stops": 1,
     }
-    config = {"date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 2}
+    config = {"provider": "serpapi", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 2}
     result = _min_offer(search_multi_city(route, config))
     # dep_date=2026-09-01, stay1=7 → mid=2026-09-08, stay2=14 → ret=2026-09-22
     assert result.final_leg_date == "2026-09-22"
@@ -348,3 +352,73 @@ def test_search_multi_city_ignav_sums_one_way_legs(monkeypatch):
     assert result is not None
     assert result.price == 1800.0
     assert result.final_leg_date == "2026-09-22"
+
+
+def test_provider_defaults_to_scrape_when_unset(monkeypatch):
+    monkeypatch.delenv("FLIGHT_PROVIDER", raising=False)
+    from code.searcher import _provider
+    assert _provider({}) == "scrape"
+
+
+def test_search_round_trip_scrape_returns_nonstop_and_onestop(monkeypatch):
+    monkeypatch.setattr("code.searcher.launch_browser", lambda: (MagicMock(), MagicMock(), MagicMock()))
+
+    def fake_search_all_options(page, legs, seat, adults):
+        return [
+            {"price": 944.0, "currency": "USD", "airline": "Hainan", "stops": "Nonstop",
+             "dep_airport": "BOS", "dep_time": "11:55 PM", "dep_date": "Wed, Sep 30",
+             "arr_airport": "PEK", "arr_time": "4:30 AM", "arr_date": "Fri, Oct 2",
+             "duration_min": 995, "layover_min": None, "layover_airport": None},
+            {"price": 780.0, "currency": "USD", "airline": "United", "stops": "1 stop",
+             "dep_airport": "BOS", "dep_time": "12:15 PM", "dep_date": "Wed, Sep 30",
+             "arr_airport": "PEK", "arr_time": "4:40 AM", "arr_date": "Fri, Oct 2",
+             "duration_min": 1705, "layover_min": 125, "layover_airport": "LAX"},
+        ]
+    monkeypatch.setattr("code.searcher.scrape_search_all_options", fake_search_all_options)
+
+    route = {"origin": "BOS", "destination": "PEK", "stay_min": 21, "stay_max": 21}
+    config = {"date_start": "2026-10-06", "date_end": "2026-12-01", "sample_dates": 1, "provider": "scrape"}
+    result = search_round_trip(route, config)
+
+    assert result[0].price == 944.0
+    # search_round_trip_scrape calls _annotate_destination like the SerpAPI/Ignav
+    # paths already do, appending " to <destination_name>" (here the airport code,
+    # since this route has no `destinations` list) — same behavior as the other
+    # two providers for a single-destination route.
+    assert result[0].airline == "Hainan to PEK"
+    assert result[0].departure_date == "2026-10-06"
+    assert result[1].price == 780.0
+    assert result[1].airline == "United to PEK"
+    assert "Hainan" in result[0].details
+
+
+def test_search_multi_city_scrape_returns_nonstop_and_onestop(monkeypatch):
+    monkeypatch.setattr("code.searcher.launch_browser", lambda: (MagicMock(), MagicMock(), MagicMock()))
+
+    def fake_search_all_options(page, legs, seat, adults):
+        return [
+            {"price": 2071.0, "currency": "USD", "airline": "JAL", "stops": "Nonstop",
+             "dep_airport": "BOS", "dep_time": "1:00 PM", "dep_date": "Tue, Oct 13",
+             "arr_airport": "NRT", "arr_time": "4:00 PM", "arr_date": "Wed, Oct 14",
+             "duration_min": 840, "layover_min": None, "layover_airport": None},
+            {"price": 1259.0, "currency": "USD", "airline": "Air Canada", "stops": "1 stop",
+             "dep_airport": "BOS", "dep_time": "10:40 AM", "dep_date": "Tue, Oct 13",
+             "arr_airport": "NRT", "arr_time": "3:25 PM", "arr_date": "Wed, Oct 14",
+             "duration_min": 945, "layover_min": 50, "layover_airport": "Montreal"},
+        ]
+    monkeypatch.setattr("code.searcher.scrape_search_all_options", fake_search_all_options)
+
+    route = {
+        "segments": [
+            {"origin": "BOS", "destination": "NRT", "stay_min": 7, "stay_max": 10},
+            {"origin": "KIX", "destination": "SHA", "stay_min": 14, "stay_max": 18},
+            {"origin": "HKG", "destination": "BOS"},
+        ],
+    }
+    config = {"date_start": "2026-10-06", "date_end": "2026-12-29", "sample_dates": 1, "provider": "scrape"}
+    result = search_multi_city(route, config)
+
+    assert result[0].price == 2071.0
+    assert result[0].airline == "JAL"
+    assert result[1].price == 1259.0
+    assert result[1].airline == "Air Canada"

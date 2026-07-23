@@ -10,6 +10,10 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
+from code.browser import launch_browser
+from code.gflights import SEAT as _GFLIGHTS_SEAT
+from code.gflights_searcher import search_all_options as scrape_search_all_options
+
 SERPAPI_URL = "https://serpapi.com/search.json"
 IGNAV_URL = "https://ignav.com/api"
 BASE_DIR = Path(__file__).parent.parent
@@ -98,7 +102,7 @@ def _ignav_api_key() -> str:
 
 
 def _provider(config: dict) -> str:
-    return str(config.get("provider") or os.environ.get("FLIGHT_PROVIDER", "serpapi")).lower()
+    return str(config.get("provider") or os.environ.get("FLIGHT_PROVIDER", "scrape")).lower()
 
 
 _WEEKDAY_NUM = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
@@ -473,6 +477,130 @@ def _cheapest_offers_by_stops(data: dict) -> dict:
     return result
 
 
+# ── Scrape offer extraction (Google Flights via code.gflights_searcher) ──────
+
+def _scrape_offers_by_stops(options: list) -> dict:
+    """{0: cheapest nonstop option, 1: cheapest exactly-1-stop option} from an
+    already-parsed options list (code.gflights_searcher.parse_all_options).
+    Matches the exact-stop-count binning `_cheapest_offers_by_stops`/
+    `_ignav_offers_by_stops` already use — 2+-stop options are dropped, same
+    as those providers do client-side."""
+    result: dict = {0: None, 1: None}
+    for stop_count, label in ((0, "Nonstop"), (1, "1 stop")):
+        candidates = [o for o in options if o["stops"] == label]
+        if candidates:
+            result[stop_count] = min(candidates, key=lambda o: o["price"])
+    return result
+
+
+def _scrape_build_offer(option: dict, departure_date: str, final_leg_date: str) -> FlightOffer:
+    """Build a FlightOffer from one parsed scrape option.
+
+    Scraping only exposes total price + the FIRST leg's detail (airline,
+    stops, duration, one layover) — not full per-direction segment detail the
+    way SerpAPI/Ignav give it. `details` is therefore a single summary line,
+    not the Outbound:/Inbound: structured text those providers produce; this
+    is an accepted trade-off — see
+    docs/superpowers/specs/2026-07-23-scraping-rewrite-design.md.
+    """
+    stops = 0 if option["stops"] == "Nonstop" else int(option["stops"].split()[0])
+    duration = _duration_label(option.get("duration_min"))
+    detail = (
+        f"{option['stops']} flight with {option['airline']}"
+        + (f", {duration}" if duration else "")
+        + f"\n  {option['dep_airport']} {option['dep_time']} -> "
+          f"{option['arr_airport']} {option['arr_time']}"
+    )
+    if option.get("layover_airport"):
+        lay_dur = _duration_label(option.get("layover_min"))
+        detail += f"\n  layover{f' ({lay_dur})' if lay_dur else ''} at {option['layover_airport']}"
+    return FlightOffer(
+        price=option["price"],
+        currency=option.get("currency", "USD"),
+        departure_date=departure_date,
+        final_leg_date=final_leg_date,
+        stops=stops,
+        airline=option["airline"],
+        details=detail,
+    )
+
+
+def search_round_trip_scrape(route: dict, config: dict) -> dict:
+    """Return {0: nonstop_offer, 1: one_stop_offer} for a round trip, scraped
+    directly off Google Flights — no API, no quota."""
+    dates, date_end = _route_dates(route, config)
+    seat = _GFLIGHTS_SEAT.get(str(config.get("cabin_class", "economy")).lower(), 1)
+    adults = int(config.get("adults", 1))
+    best: dict = {0: None, 1: None}
+
+    pw, browser, page = launch_browser()
+    try:
+        for destination, destination_name in _destination_options(route):
+            for dep_date in dates:
+                for stay in _stay_options(route):
+                    ret_date = dep_date + timedelta(days=stay)
+                    if ret_date > date_end:
+                        continue
+                    try:
+                        legs = [
+                            (route["origin"], destination, str(dep_date)),
+                            (destination, route["origin"], str(ret_date)),
+                        ]
+                        options = scrape_search_all_options(page, legs, seat, adults)
+                        offers = _scrape_offers_by_stops(options)
+                        for stop_count, option in offers.items():
+                            if option is None:
+                                continue
+                            offer = _scrape_build_offer(option, str(dep_date), str(ret_date))
+                            _annotate_destination(offer, destination_name)
+                            if best[stop_count] is None or offer.price < best[stop_count].price:
+                                best[stop_count] = offer
+                    except Exception as e:
+                        print(f"WARNING [scrape {route['origin']}-{destination} {dep_date}]: {e}")
+    finally:
+        browser.close(); pw.stop()
+    return best
+
+
+def search_multi_city_scrape(route: dict, config: dict) -> dict:
+    """Return {0: nonstop_offer, 1: one_stop_offer} for a multi-city trip,
+    scraped directly off Google Flights — no API, no quota."""
+    dates, date_end = _route_dates(route, config)
+    segs = route["segments"]
+    seat = _GFLIGHTS_SEAT.get(str(config.get("cabin_class", "economy")).lower(), 1)
+    adults = int(config.get("adults", 1))
+    best: dict = {0: None, 1: None}
+
+    pw, browser, page = launch_browser()
+    try:
+        for dep_date in dates:
+            for stay1 in _stay_options(segs[0]):
+                for stay2 in _stay_options(segs[1]):
+                    mid_date = dep_date + timedelta(days=stay1)
+                    ret_date = mid_date + timedelta(days=stay2)
+                    if ret_date > date_end:
+                        continue
+                    try:
+                        legs = [
+                            (segs[0]["origin"], segs[0]["destination"], str(dep_date)),
+                            (segs[1]["origin"], segs[1]["destination"], str(mid_date)),
+                            (segs[2]["origin"], segs[2]["destination"], str(ret_date)),
+                        ]
+                        options = scrape_search_all_options(page, legs, seat, adults)
+                        offers = _scrape_offers_by_stops(options)
+                        for stop_count, option in offers.items():
+                            if option is None:
+                                continue
+                            offer = _scrape_build_offer(option, str(dep_date), str(ret_date))
+                            if best[stop_count] is None or offer.price < best[stop_count].price:
+                                best[stop_count] = offer
+                    except Exception as e:
+                        print(f"WARNING [scrape multi-city {dep_date}/{stay1}/{stay2}]: {e}")
+    finally:
+        browser.close(); pw.stop()
+    return best
+
+
 # ── Round-trip search ─────────────────────────────────────────────────────────
 
 def search_round_trip_serpapi(route: dict, config: dict, stops_filter: int = 2) -> dict:
@@ -569,9 +697,12 @@ def search_round_trip_ignav(route: dict, config: dict, max_stops: int | None = 1
 
 
 def search_round_trip(route: dict, config: dict, stops_filter: int = 2) -> dict:
-    if _provider(config) == "ignav":
+    provider = _provider(config)
+    if provider == "ignav":
         return search_round_trip_ignav(route, config)
-    return search_round_trip_serpapi(route, config)
+    if provider == "serpapi":
+        return search_round_trip_serpapi(route, config)
+    return search_round_trip_scrape(route, config)
 
 
 # ── Multi-city search ─────────────────────────────────────────────────────────
@@ -685,6 +816,9 @@ def search_multi_city_ignav(route: dict, config: dict, max_stops: int | None = 1
 
 
 def search_multi_city(route: dict, config: dict, stops_filter: int = 2) -> dict:
-    if _provider(config) == "ignav":
+    provider = _provider(config)
+    if provider == "ignav":
         return search_multi_city_ignav(route, config)
-    return search_multi_city_serpapi(route, config)
+    if provider == "serpapi":
+        return search_multi_city_serpapi(route, config)
+    return search_multi_city_scrape(route, config)
