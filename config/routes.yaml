@@ -1,9 +1,12 @@
 routes:
   - name: "Asia Grand Tour"
     type: multi_city
-    provider: serpapi
-    date_start: "2026-09-01"   # cheaper in September; overrides global Oct-Nov window
-    date_end: "2026-10-31"
+    provider: scrape
+    date_start: "2026-10-06"   # matches jal-bot's outbound window
+    date_end: "2026-12-29"     # Dec 1 (last outbound day) + 28-day max total stay
+                                # (10-day BOS-NRT + 18-day KIX-SHA), so late-outbound
+                                # departures' returns aren't cut off -- see
+                                # _route_dates()/_max_total_stay() in code/searcher.py
     weekdays: [Tue, Thu]       # Tue/Thu departures tend to be cheapest
     sample_dates: 30           # high -> sampler returns EVERY Tue/Thu in the viable window
     segments:
@@ -12,25 +15,30 @@ routes:
         stay_min: 7
         stay_max: 10
       - origin: KIX
-        destination: HKG
+        destination: SHA
         stay_min: 14
-        stay_max: 18
+        stay_max: 18            # covers Shanghai time + self-arranged SHA->HKG leg + HK time
       - origin: HKG
         destination: BOS
-    max_stops: 0   # each leg nonstop: BOS→NRT, KIX→HKG, HKG→BOS
+    max_stops: 0   # each leg nonstop: BOS→NRT, KIX→SHA, HKG→BOS
+    # Middle segment changed from KIX->HKG to KIX->SHA (Shanghai) on 2026-07-23,
+    # with SHA->HKG self-arranged/untracked (same convention as the untracked
+    # NRT->KIX gap) -- see
+    # docs/superpowers/specs/2026-07-23-scraping-rewrite-design.md.
+    # provider changed serpapi->scrape same day: see that same spec for why.
 
   - name: "BOS ↔ Beijing (PEK)"
     csv_name: "Boston-China 3-week"   # matches historical CSV data (unchanged so
                                        # price history from the wider-destination
                                        # era stays attached to this same route)
     type: round_trip
-    provider: ignav
+    provider: scrape
     origin: BOS
     destination: PEK
     destination_name: Beijing
-    date_start: "2026-09-01"
-    date_end: "2026-11-21"      # Oct 31 (last outbound day) + 21-day stay, so late-
-                                 # October departures' returns aren't cut off
+    date_start: "2026-10-06"    # matches Asia Grand Tour's outbound window
+    date_end: "2026-12-22"      # Dec 1 (last outbound day) + 21-day stay, so late
+                                 # departures' returns aren't cut off
     weekdays: [Mon, Tue, Wed, Thu, Fri, Sat, Sun]   # all 7 days -- not a real
         # restriction; this is the mechanism _route_dates() uses to sample
         # outbound dates only through date_start..(date_end - max stay) while
@@ -38,11 +46,14 @@ routes:
         # outbound sampling and the return-date cutoff share one field and
         # can't be set independently (verified against code/searcher.py's
         # _route_dates before relying on this).
-    sample_dates: 61            # >= (Oct 31 - Sep 1).days + 1 -> every single day
-                                 # in Sep+Oct sampled, no gaps
+    sample_dates: 61            # >= (Dec 1 - Oct 6).days + 1 -> every single day
+                                 # in the window sampled, no gaps
     stay_min: 21
     stay_max: 21                # fixed 3-week stay only
     max_stops: 1   # show both nonstop and 1-stop live panels
+    # Date window moved to match Asia Grand Tour's on 2026-07-23; provider
+    # changed ignav->scrape same day -- see
+    # docs/superpowers/specs/2026-07-23-scraping-rewrite-design.md.
     # Narrowed to PEK-only (dropped PVG/Shanghai, HKG/Hong Kong) and to daily
     # Sep-Oct sampling on 2026-07-22: a coarser 8-date sample across 3
     # destinations missed a real $944 Hainan BOS-PEK fare on 2026-09-30 (found
@@ -60,9 +71,9 @@ routes:
     # correctness. See git history for the removed route if ever needed again.
 
 search:
-  provider: ignav
-  date_start: "2026-10-01"
-  date_end: "2026-11-30"
+  provider: scrape
+  date_start: "2026-10-06"
+  date_end: "2026-12-29"
   sample_dates: 4
   alert_threshold: 0.10
   cache_hours: 6
