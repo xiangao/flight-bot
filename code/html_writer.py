@@ -302,8 +302,12 @@ def _render_stop_panel(
             result.inbound_segments, result.inbound_duration_min, "Inbound"
         )
         if not out_timeline:
-            # Fallback: show airline text when no structured segments
-            out_timeline = f'<div class="leg"><div class="seg"><div class="seg-airports">{result.airline}</div></div></div>'
+            # Fallback: no structured segments (scrape-sourced rows) — show the
+            # stored detail text (route/times/duration for leg 1, route+date
+            # for every other leg) instead of just the bare airline name.
+            detail_lines = (result.details or result.airline).splitlines()
+            seg_html = "".join(f'<div class="seg-meta">{line}</div>' for line in detail_lines)
+            out_timeline = f'<div class="leg"><div class="seg">{seg_html}</div></div>'
 
         return f"""<div class="{panel_cls}">
   <div class="panel-stop">{label}</div>

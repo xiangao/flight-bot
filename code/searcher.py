@@ -493,35 +493,41 @@ def _scrape_offers_by_stops(options: list) -> dict:
     return result
 
 
-def _scrape_build_offer(option: dict, departure_date: str, final_leg_date: str) -> FlightOffer:
+def _scrape_build_offer(option: dict, legs: list) -> FlightOffer:
     """Build a FlightOffer from one parsed scrape option.
 
-    Scraping only exposes total price + the FIRST leg's detail (airline,
-    stops, duration, one layover) — not full per-direction segment detail the
-    way SerpAPI/Ignav give it. `details` is therefore a single summary line,
-    not the Outbound:/Inbound: structured text those providers produce; this
-    is an accepted trade-off — see
+    legs: the full ordered list of (origin, destination, date_str) tuples for
+    this itinerary — 2 for a round trip, 3+ for multi-city. Scraping only
+    exposes total price + the FIRST leg's detail (airline, stops, duration,
+    one layover) — not full per-direction segment detail the way SerpAPI/Ignav
+    give it — so only leg 1 gets that detail; every other leg is listed with
+    just its route and date, which is still enough to see the whole trip
+    shape (what's included, where to where, when to when). This is an
+    accepted trade-off — see
     docs/superpowers/specs/2026-07-23-scraping-rewrite-design.md.
     """
     stops = 0 if option["stops"] == "Nonstop" else int(option["stops"].split()[0])
     duration = _duration_label(option.get("duration_min"))
-    detail = (
-        f"{option['stops']} flight with {option['airline']}"
-        + (f", {duration}" if duration else "")
-        + f"\n  {option['dep_airport']} {option['dep_time']} -> "
-          f"{option['arr_airport']} {option['arr_time']}"
-    )
+    origin1, dest1, date1 = legs[0]
+    lines = [
+        f"Leg 1: {origin1}→{dest1} ({date1}) — {option['stops']} with {option['airline']}"
+        + (f", {duration}" if duration else ""),
+        f"  {option['dep_airport']} {option['dep_time']} -> "
+        f"{option['arr_airport']} {option['arr_time']}",
+    ]
     if option.get("layover_airport"):
         lay_dur = _duration_label(option.get("layover_min"))
-        detail += f"\n  layover{f' ({lay_dur})' if lay_dur else ''} at {option['layover_airport']}"
+        lines.append(f"  layover{f' ({lay_dur})' if lay_dur else ''} at {option['layover_airport']}")
+    for i, (origin, dest, date) in enumerate(legs[1:], start=2):
+        lines.append(f"Leg {i}: {origin}→{dest} ({date})")
     return FlightOffer(
         price=option["price"],
         currency=option.get("currency", "USD"),
-        departure_date=departure_date,
-        final_leg_date=final_leg_date,
+        departure_date=legs[0][2],
+        final_leg_date=legs[-1][2],
         stops=stops,
         airline=option["airline"],
-        details=detail,
+        details="\n".join(lines),
     )
 
 
@@ -553,7 +559,7 @@ def search_round_trip_scrape(route: dict, config: dict) -> dict:
                         for stop_count, option in offers.items():
                             if option is None:
                                 continue
-                            offer = _scrape_build_offer(option, str(dep_date), str(ret_date))
+                            offer = _scrape_build_offer(option, legs)
                             _annotate_destination(offer, destination_name)
                             if best[stop_count] is None or offer.price < best[stop_count].price:
                                 best[stop_count] = offer
@@ -595,7 +601,7 @@ def search_multi_city_scrape(route: dict, config: dict) -> dict:
                         for stop_count, option in offers.items():
                             if option is None:
                                 continue
-                            offer = _scrape_build_offer(option, str(dep_date), str(ret_date))
+                            offer = _scrape_build_offer(option, legs)
                             if best[stop_count] is None or offer.price < best[stop_count].price:
                                 best[stop_count] = offer
                     except Exception as e:
