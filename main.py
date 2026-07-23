@@ -6,18 +6,24 @@ from pathlib import Path
 
 from code.analyzer import analyze
 from code.html_writer import write_html
-from code.notifier import FlightResult, append_to_csv, write_summary, send_route_notification
+from code.notifier import FlightResult, append_to_csv, append_pair_rows, write_summary, send_route_notification
 from code.searcher import search_round_trip, search_multi_city
 
 BASE_DIR = Path(__file__).parent
 CONFIG_PATH = BASE_DIR / "config" / "routes.yaml"
 MULTI_CITY_CSV_PATH = BASE_DIR / "data" / "prices.csv"
 ROUND_TRIP_CSV_PATH = BASE_DIR / "data" / "round_trip_prices.csv"
+MULTI_CITY_PAIR_CSV_PATH = BASE_DIR / "data" / "prices_by_pair.csv"
+ROUND_TRIP_PAIR_CSV_PATH = BASE_DIR / "data" / "round_trip_prices_by_pair.csv"
 OUTPUT_PATH = BASE_DIR / "output" / "latest.txt"
 
 
 def history_path_for(route: dict) -> Path:
     return ROUND_TRIP_CSV_PATH if route["type"] == "round_trip" else MULTI_CITY_CSV_PATH
+
+
+def pair_path_for(route: dict) -> Path:
+    return ROUND_TRIP_PAIR_CSV_PATH if route["type"] == "round_trip" else MULTI_CITY_PAIR_CSV_PATH
 
 
 def main() -> None:
@@ -36,6 +42,7 @@ def main() -> None:
     alerts_by_route: dict = {}    # route_name → {stop_count: AlertResult}
     csv_name_by_route: dict = {r["name"]: r.get("csv_name", r["name"]) for r in routes}
     csv_path_by_route: dict = {r["name"]: history_path_for(r) for r in routes}
+    pair_csv_path_by_route: dict = {r["name"]: pair_path_for(r) for r in routes}
 
     for route in routes:
         route_search_cfg = dict(search_cfg)
@@ -49,7 +56,7 @@ def main() -> None:
 
         print(f"Searching {route['name']}...")
         try:
-            offers_by_stops = search_fn(route, route_search_cfg)
+            offers_by_stops, pair_results = search_fn(route, route_search_cfg)
         except Exception as e:
             print(f"  ERROR: {e}")
             continue
@@ -100,8 +107,13 @@ def main() -> None:
         if route_pairs and any(a.should_alert for _, a in route_pairs):
             send_route_notification(route["name"], route_pairs)
 
+        if pair_results:
+            is_multi_city = route["type"] != "round_trip"
+            append_pair_rows(pair_path_for(route), csv_name, pair_results, is_multi_city)
+
     html_path = BASE_DIR / "output" / "listings.html"
-    write_html(routes, results_by_route, alerts_by_route, csv_path_by_route, csv_name_by_route, html_path)
+    write_html(routes, results_by_route, alerts_by_route, csv_path_by_route,
+               csv_name_by_route, html_path, pair_csv_path_by_route)
     _deploy(html_path)
 
     if results:
