@@ -2,6 +2,41 @@
 
 Daily flight price tracker. Ignav for round-trips, SerpAPI for multi-city.
 
+## Architecture update (2026-07-23 — scrape is now the default provider)
+
+Both routes now default to `provider: scrape` — jal-bot's proven, free
+Google-Flights-scraping technique (headful Akamai-defeating Chrome + a
+from-scratch deep-link protobuf encoder + aria-label parser), vendored into
+`code/browser.py`/`code/gflights.py`/`code/gflights_searcher.py`. SerpAPI and
+Ignav remain available as an explicit per-route fallback (`provider: serpapi`
+or `provider: ignav`) — not removed, just no longer the default. See
+`docs/superpowers/specs/2026-07-23-scraping-rewrite-design.md` for the full
+design and `docs/superpowers/plans/2026-07-23-scraping-rewrite.md` for how it
+was implemented.
+
+- **Why:** flight-bot used a paid, quota-limited API since its first commit
+  (2026-05-03) because no scraping alternative existed anywhere in this
+  workspace at the time. jal-bot built one later (for a different problem —
+  JAL's own Akamai-gated site) and it turned out to also work directly
+  against Google Flights, for free, with no bot-gate hit in practice.
+- **What's lost:** scraping only exposes total price + the first leg's detail
+  (airline/stops/duration/one layover) per fare card, not full per-direction
+  segment detail the way SerpAPI/Ignav gave it. Scrape-sourced CSV rows have a
+  simpler one-line `details` field; the dashboard's live-panel segment
+  timeline falls back to showing just the airline name for these rows
+  (`code/html_writer.py:_render_stop_panel`'s existing no-structured-segments
+  fallback — unchanged code, already handled this case).
+- **Route shape changed too**: Asia Grand Tour's middle segment moved from
+  KIX→HKG to KIX→SHA (Shanghai), with SHA→HKG self-arranged/untracked (same
+  convention as the pre-existing untracked NRT→KIX gap).
+- **Timer moved from every-6-days to daily** (`OnCalendar=*-*-* 09:30:00`) —
+  the 6-day cadence was SerpAPI-quota-driven (250 searches/month); no longer
+  applicable once scraping is the default.
+- **Old data archived, not migrated**: `data/prices.csv`/`round_trip_prices.csv`
+  (SerpAPI/Ignav-era, old Sep-Oct date window) moved to `data/archive/` — both
+  the CSV `details` shape and the date window changed at once, so reconciling
+  old and new rows in one file wasn't worth it.
+
 ## Setup
 
 1. Register at https://ignav.com/ and https://serpapi.com/ for API keys

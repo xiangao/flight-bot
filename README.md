@@ -13,6 +13,11 @@ Daily flight price monitor that tracks two routes, publishes a live HTML dashboa
 
 Both routes are configured in `config/routes.yaml`.
 
+- **`provider: scrape`** is the new default (2026-07-23) — free, no quota, no
+  API key needed; scrapes Google Flights directly via a headful Chrome
+  (`code/browser.py`) and a deep-link URL (`code/gflights.py`). `serpapi`/
+  `ignav` remain available as an explicit per-route fallback.
+
 ## Setup
 
 ### 1. API keys
