@@ -189,10 +189,11 @@ def test_search_round_trip_returns_cheapest(monkeypatch):
     monkeypatch.setattr("code.searcher._api_key", lambda: "testkey")
 
     route = {"origin": "BOS", "destination": "HKG", "stay_min": 18, "stay_max": 25, "max_stops": 1}
-    # Explicit provider: this test predates the "scrape" default (searcher.py's
-    # _provider() now defaults to "scrape" when unset) and asserts on the
-    # requests.get-mocked SerpAPI path specifically — without this, it would
-    # silently fall through to a live, unmocked browser scrape.
+    # Explicit provider: this test asserts on the requests.get-mocked SerpAPI
+    # path specifically. _provider()'s bare default is "serpapi", but both real
+    # routes now set provider: scrape explicitly in config/routes.yaml — without
+    # this explicit key, a route config that omits provider would silently miss
+    # the SerpAPI path this test means to exercise.
     config = {"provider": "serpapi", "date_start": "2026-09-01", "date_end": "2026-11-30", "sample_dates": 2}
     result = _min_offer(search_round_trip(route, config))
     assert result is not None
