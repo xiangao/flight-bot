@@ -83,3 +83,64 @@ def test_send_notification_skips_when_notify_send_missing():
         with patch("subprocess.run") as mock_run:
             send_desktop_notification(_result(), _alert())
             mock_run.assert_not_called()
+
+
+def test_append_pair_rows_round_trip_writes_two_date_columns(tmp_path):
+    from code.notifier import append_pair_rows
+    from code.searcher import FlightOffer
+
+    csv_path = tmp_path / "pairs.csv"
+    offer = FlightOffer(
+        price=944.0, currency="USD", departure_date="2026-10-06",
+        final_leg_date="2026-10-27", stops=0, airline="Hainan",
+        details="Leg 1: BOS→PEK (2026-10-06) — Nonstop with Hainan, 16h35m",
+    )
+    append_pair_rows(csv_path, "Boston-China 3-week",
+                      [{"dates": ["2026-10-06", "2026-10-27"], "stops": 0, "offer": offer}],
+                      is_multi_city=False)
+
+    rows = list(csv.DictReader(open(csv_path)))
+    assert len(rows) == 1
+    assert rows[0]["route"] == "Boston-China 3-week"
+    assert rows[0]["dep_date"] == "2026-10-06"
+    assert rows[0]["ret_date"] == "2026-10-27"
+    assert "mid_date" not in rows[0]
+    assert float(rows[0]["price"]) == 944.0
+    assert rows[0]["airline"] == "Hainan"
+    assert "Hainan" in rows[0]["details"]
+
+
+def test_append_pair_rows_multi_city_writes_three_date_columns(tmp_path):
+    from code.notifier import append_pair_rows
+    from code.searcher import FlightOffer
+
+    csv_path = tmp_path / "pairs.csv"
+    offer = FlightOffer(
+        price=2071.0, currency="USD", departure_date="2026-10-13",
+        final_leg_date="2026-11-04", stops=0, airline="JAL",
+        details="Leg 1: BOS→NRT (2026-10-13) — Nonstop with JAL, 14h00m",
+    )
+    append_pair_rows(csv_path, "Asia Grand Tour",
+                      [{"dates": ["2026-10-13", "2026-10-21", "2026-11-04"], "stops": 0, "offer": offer}],
+                      is_multi_city=True)
+
+    rows = list(csv.DictReader(open(csv_path)))
+    assert len(rows) == 1
+    assert rows[0]["dep_date"] == "2026-10-13"
+    assert rows[0]["mid_date"] == "2026-10-21"
+    assert rows[0]["ret_date"] == "2026-11-04"
+
+
+def test_append_pair_rows_appends_without_rewriting_header(tmp_path):
+    from code.notifier import append_pair_rows
+    from code.searcher import FlightOffer
+
+    csv_path = tmp_path / "pairs.csv"
+    offer = FlightOffer(price=1.0, currency="USD", departure_date="2026-10-06",
+                         final_leg_date="2026-10-27", stops=0, airline="X", details="")
+    append_pair_rows(csv_path, "R", [{"dates": ["2026-10-06", "2026-10-27"], "stops": 0, "offer": offer}], False)
+    append_pair_rows(csv_path, "R", [{"dates": ["2026-10-08", "2026-10-29"], "stops": 1, "offer": offer}], False)
+
+    lines = csv_path.read_text().splitlines()
+    assert lines[0].startswith("ts,route,dep_date,ret_date,stops,price,currency,airline,details")
+    assert len(lines) == 3  # header + 2 rows, no duplicate header

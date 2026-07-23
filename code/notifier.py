@@ -31,6 +31,13 @@ _CSV_FIELDS = [
     "departure_date", "final_leg_date", "stops", "airline", "details",
 ]
 
+_PAIR_CSV_FIELDS_ROUND_TRIP = [
+    "ts", "route", "dep_date", "ret_date", "stops", "price", "currency", "airline", "details",
+]
+_PAIR_CSV_FIELDS_MULTI_CITY = [
+    "ts", "route", "dep_date", "mid_date", "ret_date", "stops", "price", "currency", "airline", "details",
+]
+
 
 def append_to_csv(csv_path: Path, result: FlightResult) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -50,6 +57,47 @@ def append_to_csv(csv_path: Path, result: FlightResult) -> None:
             "airline": result.airline,
             "details": result.details,
         })
+
+
+def append_pair_rows(
+    csv_path: Path,
+    route_name: str,
+    pair_results: list[dict],
+    is_multi_city: bool,
+) -> None:
+    """Append one row per sampled date-combo result.
+
+    pair_results: [{"dates": list[str], "stops": int, "offer": FlightOffer}, ...]
+    -- "dates" has 2 elements (dep, ret) for round-trip, 3 (dep, mid, ret)
+    for multi-city. One row per run per combo, so history accumulates over
+    time the same way the existing cheapest-overall CSVs do.
+    """
+    if not pair_results:
+        return
+    fields = _PAIR_CSV_FIELDS_MULTI_CITY if is_multi_city else _PAIR_CSV_FIELDS_ROUND_TRIP
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not csv_path.exists()
+    ts = datetime.now().isoformat(timespec="seconds")
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        if write_header:
+            writer.writeheader()
+        for pr in pair_results:
+            offer = pr["offer"]
+            row = {
+                "ts": ts,
+                "route": route_name,
+                "stops": pr["stops"],
+                "price": offer.price,
+                "currency": offer.currency,
+                "airline": offer.airline,
+                "details": offer.details,
+            }
+            if is_multi_city:
+                row["dep_date"], row["mid_date"], row["ret_date"] = pr["dates"]
+            else:
+                row["dep_date"], row["ret_date"] = pr["dates"]
+            writer.writerow(row)
 
 
 def write_summary(
