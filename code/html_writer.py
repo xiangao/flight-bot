@@ -117,47 +117,6 @@ def _load_history(csv_path: Path, route: str, days: int = 90) -> list[dict]:
     return sorted(by_date_stops.values(), key=lambda r: r["ts"], reverse=True)
 
 
-def _parse_legs(details: str) -> dict:
-    """Parse the CSV `details` itinerary text into per-leg duration + stops.
-
-    Returns ``{'outbound': {...}, 'inbound': {...}}`` where each value is
-    ``{'dur_min': int, 'via': [codes], 'stop_count': int}``. Missing legs are
-    absent (e.g. the multi-city CSV has no details at all → empty dict).
-    """
-    legs: dict = {}
-    if not details:
-        return legs
-    # Split into chunks each beginning with an "Outbound:" / "Inbound:" header
-    for part in re.split(r"\n(?=(?:Outbound|Inbound):)", details.strip()):
-        m = re.match(
-            r"(Outbound|Inbound):\s*.*?,\s*(\d+)\s*stop\(s\)"
-            r"(?:,\s*(\d+)h(?:\s*(\d+)m)?)?",
-            part,
-        )
-        if not m:
-            continue
-        h = int(m.group(3)) if m.group(3) else 0
-        mm = int(m.group(4)) if m.group(4) else 0
-        # Connection airports = arrival of every segment except the last
-        seg_pairs = re.findall(r"\b([A-Z]{3})\b[^\n]*?->\s*([A-Z]{3})\b", part)
-        via = [arr for _, arr in seg_pairs[:-1]] if len(seg_pairs) > 1 else []
-        legs[m.group(1).lower()] = {
-            "dur_min": h * 60 + mm,
-            "via": via,
-            "stop_count": int(m.group(2)),
-        }
-    return legs
-
-
-def _leg_summary(leg: dict | None) -> str:
-    """'via LAX · 21h 30m', or 'nonstop · 15h 15m', or '—'."""
-    if not leg:
-        return "—"
-    dur = _duration_label(leg["dur_min"])
-    where = f"via {', '.join(leg['via'])}" if leg["via"] else "nonstop"
-    return f"{where} · {dur}" if dur else where
-
-
 def _fmt_travel_dates(departure: str, ret: str) -> str:
     """'2026-09-01','2026-09-22' → 'Sep 01 → Sep 22'."""
     def short(d: str) -> str:
@@ -176,16 +135,34 @@ def _airport_codes_from_details(details: str, route_cfg: dict) -> tuple[str, str
     """Best-effort (origin, outbound-destination) airport codes for a history row.
 
     Primary source is the itinerary text in the CSV `details` column (ground
-    truth for the row); the outbound block's first and last 3-letter codes are
-    the trip's origin and turnaround airport. Falls back to the route config's
-    origin when `details` is absent (e.g. the multi-city CSV has no details).
+    truth for the row). Both the legacy SerpAPI/Ignav format ("Outbound: ..."
+    / "Inbound: ...") and the newer scrape format ("Leg 1: X→Y (date) — ..."
+    / "Leg 2: ..." / "Leg 3: ...") delimit *leg 1* differently, but both need
+    slicing to leg-1-only text before extracting codes: a multi-leg scrape
+    trip's Leg 2/3 airports are a different direction entirely (e.g. the
+    trip's final return-home airport), not a continuation of leg 1, and must
+    not leak into "the outbound destination". Falls back to the route
+    config's origin when `details` is absent (e.g. no data yet for this row).
+
+    NOTE on a bug found while implementing this fix: the naive "slice to
+    leg-1-only text, then take the first and last bare 3-letter code" approach
+    (which is *correct* for the legacy format, where the last code before
+    "Inbound:" is the true outbound destination even through a connection)
+    over-reaches for the new scrape format, because leg 1's own descriptive
+    text can contain an unrelated 3-letter uppercase token — e.g. a 3-letter
+    airline code like "JAL" in "Leg 1: BOS→NRT (...) — Nonstop with JAL,
+    14h 10m" — which then wrongly wins as "codes[-1]". So the new format is
+    matched directly off its explicit "Leg 1: XXX→YYY" arrow pair instead of
+    scanning the whole leg-1 block for bare codes.
     """
     if details:
-        outbound = details.split("Inbound")[0]
-        codes = re.findall(r"\b[A-Z]{3}\b", outbound)
+        m = re.match(r"Leg 1:\s*([A-Z]{3})\s*(?:→|->)\s*([A-Z]{3})", details)
+        if m:
+            return m.group(1), m.group(2)
+        leg1_only = re.split(r"\nInbound:", details)[0]
+        codes = re.findall(r"\b[A-Z]{3}\b", leg1_only)
         if len(codes) >= 2:
             return codes[0], codes[-1]
-    # Fallback: route config origin; destination unknown → no link
     origin = route_cfg.get("origin", "")
     if not origin and route_cfg.get("segments"):
         origin = route_cfg["segments"][0].get("origin", "")
@@ -211,9 +188,7 @@ def _history_table(rows: list[dict], route_cfg: dict, stops: int) -> str:
     """Render one history section (heading + table) for a single stop count.
 
     Returns "" when there is no history for this stop count, so the caller can
-    omit the section entirely. The `stops` filter is on the CSV `stops` column,
-    which is the *outbound* stop count; both leg summaries are shown so the
-    inbound (which may differ) stays visible.
+    omit the section entirely. The `stops` filter is on the CSV `stops` column.
     """
     sub = [r for r in rows if r["stops"] == stops]
     if not sub:
@@ -226,14 +201,9 @@ def _history_table(rows: list[dict], route_cfg: dict, stops: int) -> str:
         f"<h3>{label} — Price History</h3>",
         '<div class="hist-wrap"><table><tr>'
         "<th>Date</th><th>Price</th><th>Airline</th><th>Travel dates</th>"
-        "<th>Outbound</th><th>Inbound</th><th>Total</th><th></th></tr>",
+        "<th>Details</th><th></th></tr>",
     ]
     for r in sub[:30]:  # cap at 30 rows
-        legs = _parse_legs(r.get("details", ""))
-        out, inb = legs.get("outbound"), legs.get("inbound")
-        total_min = (out["dur_min"] if out else 0) + (inb["dur_min"] if inb else 0)
-        total = _duration_label(total_min) if total_min else "—"
-
         cls = 'class="price-cell low"' if r["price"] <= lo else 'class="price-cell"'
         origin, dest = _airport_codes_from_details(r.get("details", ""), route_cfg)
         link_url = _gflights_link(origin, dest, r["departure"], r["return"])
@@ -241,15 +211,99 @@ def _history_table(rows: list[dict], route_cfg: dict, stops: int) -> str:
             f'<a href="{link_url}" target="_blank" rel="noopener">Search ↗</a>'
             if link_url else ""
         )
+        details_html = "<br>".join(r["details"].splitlines()) if r.get("details") else "—"
         html.append(
             "<tr>"
             f"<td>{r['date']}</td>"
             f"<td {cls}>${r['price']:,.0f}</td>"
             f"<td>{r['airline']}</td>"
             f"<td class=\"dates-cell\">{_fmt_travel_dates(r['departure'], r['return'])}</td>"
-            f"<td class=\"leg-cell\">{_leg_summary(out)}</td>"
-            f"<td class=\"leg-cell\">{_leg_summary(inb)}</td>"
-            f"<td class=\"dates-cell\">{total}</td>"
+            f"<td class=\"leg-cell\">{details_html}</td>"
+            f"<td>{link}</td>"
+            "</tr>"
+        )
+    html.append("</table></div>")
+    return "\n".join(html)
+
+
+def _load_pair_history(csv_path: Path, route: str, is_multi_city: bool, days: int = 90) -> list[dict]:
+    """Return per-date-pair rows for this route within `days` days."""
+    if not csv_path.exists():
+        return []
+    cutoff = datetime.now() - timedelta(days=days)
+    rows = []
+    with open(csv_path, newline="") as f:
+        for row in csv.DictReader(f):
+            if row.get("route") != route:
+                continue
+            try:
+                ts_dt = datetime.fromisoformat(row["ts"])
+                if ts_dt < cutoff:
+                    continue
+                rows.append({
+                    "ts": row["ts"],
+                    "dep_date": row.get("dep_date", ""),
+                    "mid_date": row.get("mid_date", "") if is_multi_city else "",
+                    "ret_date": row.get("ret_date", ""),
+                    "price": float(row["price"]),
+                    "airline": row.get("airline", ""),
+                    "details": row.get("details", ""),
+                    "stops": int(row.get("stops", -1)),
+                })
+            except (ValueError, KeyError):
+                continue
+    return rows
+
+
+def _latest_per_pair(rows: list[dict], stops: int) -> list[dict]:
+    """Latest observation per unique date-combo, for one stop count, sorted
+    cheapest-first — mirrors the "latest, not all-time" rule the top summary
+    panel already uses, so a stale cheap sighting can't look bookable today."""
+    sub = [r for r in rows if r["stops"] == stops]
+    latest: dict = {}
+    for r in sub:
+        key = (r["dep_date"], r["mid_date"], r["ret_date"])
+        if key not in latest or r["ts"] > latest[key]["ts"]:
+            latest[key] = r
+    return sorted(latest.values(), key=lambda r: r["price"])
+
+
+def _pair_table(rows: list[dict], route_cfg: dict, stops: int, is_multi_city: bool) -> str:
+    """One row per sampled date combination — answers "what does *this*
+    specific trip cost", not just "what's the single cheapest one found
+    today". Returns "" when empty, same convention as `_history_table`."""
+    current = _latest_per_pair(rows, stops)
+    if not current:
+        return ""
+
+    label = "Nonstop" if stops == 0 else f"{stops} Stop" + ("s" if stops > 1 else "")
+    html = [
+        f"<h3>{label} — All Sampled Dates</h3>",
+        '<div class="hist-wrap"><table><tr><th>Outbound</th>'
+        + ("<th>Mid</th>" if is_multi_city else "")
+        + "<th>Return</th><th>Latest price</th><th>Details</th><th>As of</th><th></th></tr>",
+    ]
+    for r in current[:60]:
+        origin, dest = _airport_codes_from_details(r.get("details", ""), route_cfg)
+        # Leg 1 of a multi-city trip is one-way (BOS->NRT), not a round trip --
+        # there's no "return date" for it, so leave ret blank there (_gflights_link
+        # already handles a falsy ret by omitting "returning ..." from the query).
+        # For round-trip, leg 1 and leg 2 really are outbound/return of one trip.
+        ret_for_link = "" if is_multi_city else r["ret_date"]
+        link_url = _gflights_link(origin, dest, r["dep_date"], ret_for_link)
+        link = (
+            f'<a href="{link_url}" target="_blank" rel="noopener">Search ↗</a>'
+            if link_url else ""
+        )
+        details_html = "<br>".join(r["details"].splitlines()) if r.get("details") else "—"
+        html.append(
+            "<tr>"
+            f"<td>{r['dep_date']}</td>"
+            + (f"<td>{r['mid_date']}</td>" if is_multi_city else "")
+            + f"<td>{r['ret_date']}</td>"
+            f"<td class=\"price-cell\">${r['price']:,.0f}</td>"
+            f"<td class=\"leg-cell\">{details_html}</td>"
+            f"<td class=\"dates-cell\">{r['ts'][:10]}</td>"
             f"<td>{link}</td>"
             "</tr>"
         )
@@ -345,6 +399,8 @@ def _render_card(
     route_cfg: dict,
     min_stops: int = 0,
     max_stops: int = 1,
+    pair_rows: list[dict] | None = None,
+    is_multi_city: bool = False,
 ) -> str:
     panel_0 = _render_stop_panel(0, results.get(0), alerts.get(0), history) if min_stops <= 0 <= max_stops else ""
     panel_1 = _render_stop_panel(1, results.get(1), alerts.get(1), history) if min_stops <= 1 <= max_stops else ""
@@ -356,6 +412,13 @@ def _render_card(
     hist_html = _history_table(history, route_cfg, 0) + _history_table(history, route_cfg, 1)
     if not hist_html:
         hist_html = "<h3>Price History</h3><p style='color:#aaa;font-size:0.85rem'>No history yet.</p>"
+
+    pair_rows = pair_rows or []
+    pair_html = (
+        _pair_table(pair_rows, route_cfg, 0, is_multi_city)
+        + _pair_table(pair_rows, route_cfg, 1, is_multi_city)
+    )
+
     return f"""<div class="card">
   <div class="card-header">
     <div class="route-name">{route_name}</div>
@@ -366,6 +429,7 @@ def _render_card(
       {panel_1}
     </div>
     {hist_html}
+    {pair_html}
   </div>
 </div>"""
 
@@ -377,6 +441,7 @@ def write_html(
     csv_path_by_route: dict,
     csv_name_by_route: dict,
     html_path: Path,
+    pair_csv_path_by_route: dict,
 ) -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     cards = []
@@ -387,9 +452,14 @@ def write_html(
         route_alerts = alerts_by_route.get(name, {})
         csv_path = csv_path_by_route.get(name)
         history = _load_history(csv_path, csv_name) if csv_path else []
+        is_multi_city = "segments" in route_cfg
+        pair_csv_path = pair_csv_path_by_route.get(name)
+        pair_rows = _load_pair_history(pair_csv_path, csv_name, is_multi_city) if pair_csv_path else []
         min_stops = int(route_cfg.get("min_stops", 0))
         max_stops = int(route_cfg.get("max_stops", 1))
-        card = _render_card(name, route_results, route_alerts, history, route_cfg, min_stops=min_stops, max_stops=max_stops)
+        card = _render_card(name, route_results, route_alerts, history, route_cfg,
+                            min_stops=min_stops, max_stops=max_stops,
+                            pair_rows=pair_rows, is_multi_city=is_multi_city)
         if card:
             cards.append(card)
 
