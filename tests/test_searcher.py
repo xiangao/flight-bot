@@ -354,10 +354,10 @@ def test_search_multi_city_ignav_sums_one_way_legs(monkeypatch):
     assert result.final_leg_date == "2026-09-22"
 
 
-def test_provider_defaults_to_scrape_when_unset(monkeypatch):
+def test_provider_defaults_to_serpapi_when_unset(monkeypatch):
     monkeypatch.delenv("FLIGHT_PROVIDER", raising=False)
     from code.searcher import _provider
-    assert _provider({}) == "scrape"
+    assert _provider({}) == "serpapi"
 
 
 def test_search_round_trip_scrape_returns_nonstop_and_onestop(monkeypatch):

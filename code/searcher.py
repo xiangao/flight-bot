@@ -102,7 +102,7 @@ def _ignav_api_key() -> str:
 
 
 def _provider(config: dict) -> str:
-    return str(config.get("provider") or os.environ.get("FLIGHT_PROVIDER", "scrape")).lower()
+    return str(config.get("provider") or os.environ.get("FLIGHT_PROVIDER", "serpapi")).lower()
 
 
 _WEEKDAY_NUM = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
